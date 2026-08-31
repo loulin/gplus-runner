@@ -66,6 +66,22 @@ jobs:
         with:
           enable-cache: false
 
+      - name: Fetch locked Hermes release tag
+        shell: pwsh
+        working-directory: source
+        run: |
+          $lockPath = 'apps/gplus-bot-desktop/vendor/hermes-source-lock.json'
+          $lock = Get-Content -LiteralPath $lockPath -Raw | ConvertFrom-Json
+          $hermesTag = [string]$lock.upstream.tag
+          if ($hermesTag -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+            throw "Hermes source lock has an invalid tag: $hermesTag"
+          }
+          $hermesPath = 'apps/gplus-bot-desktop/vendor/hermes-agent'
+          git -C $hermesPath fetch --no-recurse-submodules origin "refs/tags/$hermesTag`:refs/tags/$hermesTag"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to fetch locked Hermes tag: $hermesTag"
+          }
+
       - name: Verify source identity and runner architecture
         id: source
         shell: pwsh
