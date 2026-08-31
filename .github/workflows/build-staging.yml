@@ -61,6 +61,31 @@ jobs:
         with:
           node-version: '24'
 
+      - name: Setup packaging Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+          architecture: x64
+
+      - name: Validate packaging Python layout
+        shell: pwsh
+        run: |
+          $pythonPath = (Get-Command python.exe).Source
+          if (-not $pythonPath -or -not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+            throw "GitHub Windows Python executable is unavailable: $pythonPath"
+          }
+          $pythonRoot = Split-Path -Parent $pythonPath
+          $python3Path = Join-Path $pythonRoot 'python3.exe'
+          if (Test-Path -LiteralPath $python3Path) {
+            $python3Item = Get-Item -LiteralPath $python3Path
+            if ($python3Item.PSIsContainer -or (($python3Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+              throw "Packaging Python contains a directory/reparse-point python3.exe: $python3Path"
+            }
+          }
+          "GPLUS_OFFLINE_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+          Write-Host "Packaging Python: $pythonPath"
+          & $pythonPath --version
+
       - name: Setup uv
         uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04 # v6.0.0
         with:
