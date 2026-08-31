@@ -8,8 +8,10 @@ name or a full commit SHA from `loulin/gplus`; the default is `develop`. It uses
 the native `windows-latest` x64 runner and currently builds only `win-x64`.
 
 The workflow checks out the private source with `gplus-source-reader`, initializes
-the Hermes submodule, installs the filtered workspace, runs the Desktop baseline
-checks, and produces an unsigned proof package. It uploads only a sanitized
+the Hermes submodule, installs the filtered workspace, runs JavaScript contract
+smoke tests, and produces an unsigned proof package. The full Desktop baseline
+check is intentionally a separate follow-up because its Hermes Python test
+environment can take a long time to resolve on a fresh runner. It uploads only a sanitized
 manifest containing source identity, package metadata, artifact names, sizes, and
 SHA-256 values. The installer is intentionally not uploaded until encrypted
 handoff is implemented.

@@ -135,10 +135,14 @@ jobs:
           corepack pnpm install --filter 'gplus-bot-desktop...' --recursive --frozen-lockfile --ignore-scripts
           corepack pnpm --filter '@gplus/bot-contracts' run build
 
-      - name: Run Desktop baseline checks
+      - name: Run Desktop JavaScript contract smoke
         shell: pwsh
         working-directory: source
-        run: npm --prefix apps/gplus-bot-desktop run check
+        run: |
+          node --test `
+            apps/gplus-bot-desktop/tests/acceptance-evidence-audit.test.mjs `
+            apps/gplus-bot-desktop/tests/gplus-desktop-release-version.test.mjs `
+            apps/gplus-bot-desktop/tests/gplus-desktop-update-publish-guards.test.mjs
 
       - name: Build unsigned Windows proof
         shell: pwsh
