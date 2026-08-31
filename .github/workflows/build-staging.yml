@@ -79,8 +79,11 @@ jobs:
           if (Test-Path -LiteralPath $python3Path) {
             $python3Item = Get-Item -LiteralPath $python3Path
             if ($python3Item.PSIsContainer -or (($python3Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-              throw "Packaging Python contains a directory/reparse-point python3.exe: $python3Path"
+              Remove-Item -LiteralPath $python3Path -Force -Recurse
             }
+          }
+          if (Test-Path -LiteralPath $python3Path) {
+            throw "Packaging Python python3.exe could not be removed from the temporary runner: $python3Path"
           }
           "GPLUS_OFFLINE_PYTHON=$pythonPath" >> $env:GITHUB_ENV
           Write-Host "Packaging Python: $pythonPath"
