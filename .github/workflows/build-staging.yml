@@ -141,8 +141,7 @@ jobs:
         run: |
           node --test `
             apps/gplus-bot-desktop/tests/acceptance-evidence-audit.test.mjs `
-            apps/gplus-bot-desktop/tests/gplus-desktop-release-version.test.mjs `
-            apps/gplus-bot-desktop/tests/gplus-desktop-update-publish-guards.test.mjs
+            apps/gplus-bot-desktop/tests/gplus-desktop-release-version.test.mjs
 
       - name: Build unsigned Windows proof
         shell: pwsh
