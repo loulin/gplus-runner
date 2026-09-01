@@ -277,6 +277,17 @@ tag object、peeled commit 和 source ref。使用本 Workflow 从任意 branch/
 staging、production 必须使用不同 keypair。私钥轮换时停用旧 recipient，保留已完成
 发布所需的审计记录，不把私钥放进仓库 Secret。
 
+Windows 签名机使用固定的本机私钥路径，按 handoff 的 `profile` 一一对应：
+
+```text
+staging    -> %USERPROFILE%\.gplus\gplus-desktop-staging-age-key.txt
+production -> %USERPROFILE%\.gplus\gplus-desktop-production-age-key.txt
+```
+
+后续会话和操作员应从上述路径读取 key，不从 `tmp/`、仓库 checkout 或 runner
+workspace 猜测或回退。两个文件的目录和文件 ACL 只允许当前用户、`SYSTEM` 与
+`Administrators`；私钥不得复制到 GitHub、Actions artifact、日志、聊天或发布 receipt。
+
 ### 5.2 加密包内容
 
 加密包只允许包含当前 app/target 的构建上下文。应用 adapter 负责生成并记录
@@ -380,17 +391,21 @@ RELEASE_TOKEN
 
 ### 6.2 当前本地命令边界
 
-签名机先校验公开 manifest 的 ciphertext SHA-256，再用本地 age 私钥解密并解包。
+签名机先校验公开 manifest 的 ciphertext SHA-256，再用与 handoff `profile` 对应的
+本地 age 私钥解密并解包。解密 key 路径固定为上节列出的 profile 路径。
 解包目录必须包含 `handoff-manifest.json` 和对应 `payload/`，然后从同一私有仓库
 checkout 执行应用 adapter：
 
 ```powershell
-age.exe -d -i "$env:USERPROFILE\.gplus\gplus-desktop-staging-age-key.txt" `
+$profile = 'staging' # production handoff 使用 'production'
+$ageKey = Join-Path $env:USERPROFILE ".gplus\gplus-desktop-$profile-age-key.txt"
+if (-not (Test-Path -LiteralPath $ageKey -PathType Leaf)) { throw "Missing age key: $ageKey" }
+age.exe -d -i $ageKey `
   -o "$env:TEMP\gplus-handoff.zip" .\encrypted-handoff.age
 Expand-Archive -LiteralPath "$env:TEMP\gplus-handoff.zip" `
   -DestinationPath "$env:TEMP\gplus-handoff" -Force
 corepack pnpm --filter gplus-bot-desktop run release:finalize-handoff -- `
-  --handoff "$env:TEMP\gplus-handoff" --profile staging --target win-x64 `
+  --handoff "$env:TEMP\gplus-handoff" --profile $profile --target win-x64 `
   --expected-source-sha <full-source-sha> --publish
 ```
 

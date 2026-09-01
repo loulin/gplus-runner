@@ -80,6 +80,18 @@ recipient.
 Back up the private key securely. Do not paste it into chat, GitHub, a log, or
 an Actions secret.
 
+Keep the private keys at these fixed paths on the Windows signing machine:
+
+```text
+%USERPROFILE%\.gplus\gplus-desktop-staging-age-key.txt
+%USERPROFILE%\.gplus\gplus-desktop-production-age-key.txt
+```
+
+The first path is used only for `profile=staging`; the second is used only for
+`profile=production`. Create the `.gplus` directory with ACLs limited to the
+current user, `SYSTEM`, and `Administrators`. Do not copy either private key to
+the repository, a runner workspace, an Actions artifact, or a log.
+
 ## Build cache boundary
 
 The workflow caches only dependency-download data under the temporary Windows
@@ -136,18 +148,22 @@ arbitrary branch or commit for staging validation.
 ## Finalize on Windows
 
 The signing machine downloads the artifact, verifies the public manifest's
-ciphertext SHA-256, and decrypts it with its local age private key. Extract the
-ZIP to a temporary directory, then run the matching private-repository adapter
-from a checkout that contains the same release scripts:
+ciphertext SHA-256, and decrypts it with the local age private key for the
+selected profile. Extract the ZIP to a temporary directory, then run the
+matching private-repository adapter from a checkout that contains the same
+release scripts:
 
 ```powershell
-age.exe -d -i "$env:USERPROFILE\.gplus\gplus-desktop-staging-age-key.txt" `
+$profile = 'staging' # use 'production' for a production handoff
+$ageKey = Join-Path $env:USERPROFILE ".gplus\gplus-desktop-$profile-age-key.txt"
+if (-not (Test-Path -LiteralPath $ageKey -PathType Leaf)) { throw "Missing age key: $ageKey" }
+age.exe -d -i $ageKey `
   -o "$env:TEMP\gplus-handoff.zip" .\encrypted-handoff.age
 Expand-Archive -LiteralPath "$env:TEMP\gplus-handoff.zip" `
   -DestinationPath "$env:TEMP\gplus-handoff" -Force
 
 corepack pnpm --filter gplus-bot-desktop run release:finalize-handoff -- `
-  --handoff "$env:TEMP\gplus-handoff" --profile staging --target win-x64 `
+  --handoff "$env:TEMP\gplus-handoff" --profile $profile --target win-x64 `
   --expected-source-sha <full-source-sha>
 ```
 
