@@ -318,7 +318,11 @@ $resolvedHandoffDirectory = Resolve-FullPath $HandoffDirectory
     $header = Get-AgeHeader $ciphertextPath
     if (-not $header.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) { throw 'Encrypted handoff does not have an age v1 header' }
     $ciphertextItem = Get-Item -LiteralPath $ciphertextPath -Force
-    if ($ciphertextItem.Length -le 0 -or $ciphertextItem.Length -gt [int64] 2GB) { throw "Ciphertext handoff size is outside the allowed range: $($ciphertextItem.Length) bytes" }
+    # GitHub Actions artifacts support multi-gigabyte payloads.  The generated
+    # Hermes workspace can legitimately exceed 2 GiB until the runtime-only
+    # source filter is applied; keep this ceiling high enough for the current
+    # production handoff while still rejecting unbounded output.
+    if ($ciphertextItem.Length -le 0 -or $ciphertextItem.Length -gt [int64] 8GB) { throw "Ciphertext handoff size is outside the allowed range: $($ciphertextItem.Length) bytes" }
     $public = $publicManifest
     $public | Add-Member -NotePropertyName ciphertext -NotePropertyValue ([ordered]@{
       name = 'encrypted-handoff.age'; size = [int64]$ciphertextItem.Length;
