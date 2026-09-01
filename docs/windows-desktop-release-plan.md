@@ -111,11 +111,33 @@ default: develop
     SHA-256 后上传 ciphertext artifact；不上传任何明文构建目录。
 15. 上传结束后删除生成的明文 target workspace。
 
+### 3.2.1 缓存与加速边界
+
+Workflow 在每次 hosted Windows job 开始时都是全新 runner，因此缓存只能减少
+依赖下载，不能保留源码 checkout、生成 workspace 或上一次构建目录。当前启用
+的缓存如下：
+
+- `uv` 的 PyPI 下载缓存，按 Hermes lock 和 Desktop Python dependency profile
+  复用。
+- 生成 Hermes Desktop workspace 使用的 npm registry cache。
+- Electron runtime 下载缓存，以及 electron-builder 使用的 7-Zip/NSIS 工具缓存。
+
+这些目录都位于 `$RUNNER_TEMP`，只通过 GitHub Actions cache 恢复和保存。缓存 key
+按 Windows runner 和相关锁定/overlay 输入隔离；输入发生变化时使用同一平台的
+前缀 cache 作为候选恢复值。第一次运行或缓存未命中时耗时不会降低，后续运行才会
+减少网络下载。
+
+pnpm store 不纳入公共 runner 缓存。顶层 monorepo 的 frozen lockfile 仍可能解析
+私有 `@imedpower` 包，缓存整个 store 会扩大私有依赖进入公共仓库缓存的风险。
+因此 filtered pnpm install 仍会在每次 job 中重新准备，只有生成 workspace 的
+npm 下载数据被复用；`node_modules`、源码、`win-unpacked`、安装包和 handoff
+也不缓存。
+
 当前 workflow 的依赖准备使用：
 
 ```text
 corepack pnpm install --filter 'gplus-bot-desktop...' --recursive \
-  --frozen-lockfile --ignore-scripts
+  --frozen-lockfile --ignore-scripts --prefer-offline
 corepack pnpm --filter '@gplus/bot-contracts' run build
 ```
 

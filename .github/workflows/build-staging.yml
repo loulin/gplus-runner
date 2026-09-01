@@ -56,6 +56,22 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
+      - name: Configure isolated build caches
+        shell: pwsh
+        run: |
+          $npmCache = Join-Path $env:RUNNER_TEMP 'gplus-npm-cache'
+          $electronCache = Join-Path $env:RUNNER_TEMP 'gplus-electron-cache'
+          $electronBuilderCache = Join-Path $env:RUNNER_TEMP 'gplus-electron-builder-cache'
+          "NPM_CONFIG_CACHE=$npmCache" >> $env:GITHUB_ENV
+          "electron_config_cache=$electronCache" >> $env:GITHUB_ENV
+          "ELECTRON_BUILDER_CACHE=$electronBuilderCache" >> $env:GITHUB_ENV
+          "NPM_CONFIG_AUDIT=false" >> $env:GITHUB_ENV
+          "NPM_CONFIG_FUND=false" >> $env:GITHUB_ENV
+          "NPM_CONFIG_PREFER_OFFLINE=true" >> $env:GITHUB_ENV
+          Write-Host "npm cache: $npmCache"
+          Write-Host "Electron cache: $electronCache"
+          Write-Host "Electron Builder cache: $electronBuilderCache"
+
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -133,7 +149,12 @@ jobs:
       - name: Setup uv
         uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04 # v6.0.0
         with:
-          enable-cache: false
+          enable-cache: true
+          working-directory: source
+          cache-dependency-glob: |
+            apps/gplus-bot-desktop/src/overlay/python-dependency-profile.mjs
+            apps/gplus-bot-desktop/vendor/hermes-agent/pyproject.toml
+            apps/gplus-bot-desktop/vendor/hermes-agent/uv.lock
 
       - name: Fetch locked Hermes release tag
         shell: pwsh
@@ -195,13 +216,37 @@ jobs:
           Write-Host "Hermes SHA: $hermesSha"
           Write-Host "Node architecture: $nodeArch"
 
+      - name: Restore npm download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-npm-cache
+          key: gplus-runner-npm-${{ runner.os }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/package-rewrite.mjs', 'source/apps/gplus-bot-desktop/src/overlay/constants.mjs') }}
+          restore-keys: |
+            gplus-runner-npm-${{ runner.os }}-
+
+      - name: Restore Electron download cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-cache
+          key: gplus-runner-electron-${{ runner.os }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json') }}
+          restore-keys: |
+            gplus-runner-electron-${{ runner.os }}-
+
+      - name: Restore Electron Builder tool cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-builder-cache
+          key: gplus-runner-electron-builder-${{ runner.os }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json') }}
+          restore-keys: |
+            gplus-runner-electron-builder-${{ runner.os }}-
+
       - name: Install filtered workspace dependencies
         shell: pwsh
         working-directory: source
         run: |
           corepack enable
           corepack pnpm --version
-          corepack pnpm install --filter 'gplus-bot-desktop...' --recursive --frozen-lockfile --ignore-scripts
+          corepack pnpm install --filter 'gplus-bot-desktop...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
           corepack pnpm --filter '@gplus/bot-contracts' run build
 
       - name: Run Desktop JavaScript contract smoke

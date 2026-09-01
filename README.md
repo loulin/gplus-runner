@@ -15,6 +15,8 @@ the application source remains private.
   `loulin/gplus`.
 - The job installs the filtered workspace, prepares the locked Hermes source,
   runs Desktop JavaScript smoke tests, and builds an unsigned NSIS/ZIP package.
+- The job restores isolated npm, Electron, Electron Builder, and uv caches;
+  the pnpm store and all source/generated/build directories remain uncached.
 - The validated `win-unpacked` handoff is allow-list packaged and encrypted with
   `age` before upload. Public artifacts contain only ciphertext and sanitized
   manifests; they do not contain source code or plaintext EXE/ZIP.
@@ -67,6 +69,24 @@ gh variable set GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING `
 
 Back up the private key securely. Do not paste it into chat, GitHub, a log, or
 an Actions secret.
+
+## Build cache boundary
+
+The workflow caches only dependency-download data under the temporary Windows
+runner directory:
+
+- uv's PyPI cache, keyed by the Hermes lock and Desktop Python dependency
+  profile.
+- npm's registry cache for the generated public Hermes Desktop workspace.
+- Electron's downloaded runtime archive and Electron Builder's public 7-Zip/NSIS
+  tool archives.
+
+The workflow does not cache the pnpm store because the private monorepo lockfile
+can resolve packages outside the filtered Desktop workspace, including the
+private `@imedpower` registry. It also never caches `source/`, `node_modules`,
+the generated Desktop workspace, `win-unpacked`, installers, or handoff files.
+Cache changes take effect on the next manually started run; updating this
+workflow does not trigger a build.
 
 ## Run the staging build
 
