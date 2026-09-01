@@ -259,7 +259,7 @@ jobs:
         run: |
           $output = Join-Path $pwd.Path '.windows-handoff'
           $package = if ($env:APPLICATION -eq 'gplus-bot-desktop') { 'gplus-bot-desktop' } else { 'libre-reader' }
-          corepack pnpm --filter $package run release:prepare-handoff -- --profile $env:PROFILE --target $env:TARGET --source-ref $env:SOURCE_REF --source-sha $env:SOURCE_SHA --workflow-run-id $env:GITHUB_RUN_ID --output $output
+          corepack pnpm --filter $package run release:prepare-handoff --profile $env:PROFILE --target $env:TARGET --source-ref $env:SOURCE_REF --source-sha $env:SOURCE_SHA --workflow-run-id $env:GITHUB_RUN_ID --output $output
 
       - name: Create encrypted handoff
         shell: pwsh
