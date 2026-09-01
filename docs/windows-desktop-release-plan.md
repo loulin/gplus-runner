@@ -218,6 +218,18 @@ gh run download <run-id> --repo loulin/gplus-runner \
   --name gplus-bot-desktop-staging-handoff-<run-id>
 ```
 
+本 Workflow 的构建输出发布到当前 Run 的 GitHub Actions Artifact，而不是
+Git Tag 或 GitHub Release：
+
+- `gplus-bot-desktop-staging-handoff-<run-id>`：age 加密 ZIP 和脱敏 ciphertext manifest，
+  供 Windows 签名机下载。
+- `gplus-bot-desktop-staging-manifest-<run-id>`：只含源码、版本、构建号和文件摘要的脱敏 manifest。
+
+Artifact 目前保留 7 天，只是跨机器交接存储。Tag 不承担二进制存储职责；私有仓库的 annotated
+release tag 只在正式 `release:local` 发布和 `release:verify` closeout 中用于固定版本身份、
+tag object、peeled commit 和 source ref。使用本 Workflow 从任意 branch/SHA 做 staging 验证时，
+不需要为了保存产物创建 Tag；但该 branch 构建不能直接冒充已有 release tag 的正式 target。
+
 不要仅凭 runner 启动、checkout 成功或依赖安装成功判断构建完成；必须看到
 `Build unsigned Windows package`、`Write sanitized build manifest`、
 `Create encrypted Windows handoff` 和两个 upload steps 全部成功。

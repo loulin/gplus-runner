@@ -94,6 +94,14 @@ gh run download <run-id> --repo loulin/gplus-runner \
   --name gplus-bot-desktop-staging-handoff-<run-id>
 ```
 
+The build output is persisted in the GitHub Actions run, not in Git. The
+handoff artifact is short-lived transport storage for the Windows signing
+machine and contains an age-encrypted ZIP plus a sanitized ciphertext
+manifest. Do not create a Git tag merely to store these bytes. A private
+repository annotated release tag is required only when running the formal
+`release:local` publish/closeout flow; this runner workflow can build an
+arbitrary branch or commit for staging validation.
+
 ## Security rule
 
 The private checkout is temporary runner state. The workflow uses a short-lived
