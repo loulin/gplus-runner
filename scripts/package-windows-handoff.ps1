@@ -180,9 +180,11 @@ function Get-Sha512Base64 {
   )
 
   $sha512 = [System.Security.Cryptography.SHA512]::Create()
+  $stream = [System.IO.File]::OpenRead($Path)
   try {
-    $bytes = $sha512.ComputeHash([System.IO.File]::ReadAllBytes($Path))
+    $bytes = $sha512.ComputeHash($stream)
   } finally {
+    $stream.Dispose()
     $sha512.Dispose()
   }
   return [Convert]::ToBase64String($bytes)
