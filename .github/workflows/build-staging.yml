@@ -1,4 +1,4 @@
-name: Staging Windows Desktop Proof
+name: Staging Windows Desktop Build
 
 on:
   workflow_dispatch:
@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   build:
-    name: Build win-x64 proof
+    name: Build win-x64 package
     runs-on: windows-latest
     timeout-minutes: 360
     env:
@@ -89,6 +89,47 @@ jobs:
           Write-Host "Packaging Python: $pythonPath"
           & $pythonPath --version
 
+      - name: Setup age encryption
+        id: age
+        shell: pwsh
+        env:
+          AGE_VERSION: '1.2.1'
+          AGE_ARCHIVE_SHA256: 46db0db71f146061f7c8fffa912cb806aef1bc8450e27a3abc1744f0591b89fb
+        run: |
+          $archivePath = Join-Path $env:RUNNER_TEMP "age-v$($env:AGE_VERSION)-windows-amd64.zip"
+          $archiveUrl = "https://github.com/FiloSottile/age/releases/download/v$($env:AGE_VERSION)/age-v$($env:AGE_VERSION)-windows-amd64.zip"
+          Invoke-WebRequest -UseBasicParsing -Uri $archiveUrl -OutFile $archivePath
+          $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -ne $env:AGE_ARCHIVE_SHA256) {
+            throw "age archive SHA-256 mismatch: expected $($env:AGE_ARCHIVE_SHA256), got $actualHash"
+          }
+          $ageRoot = Join-Path $env:RUNNER_TEMP "age-v$($env:AGE_VERSION)-windows-amd64"
+          if (Test-Path -LiteralPath $ageRoot) {
+            Remove-Item -LiteralPath $ageRoot -Recurse -Force
+          }
+          Expand-Archive -LiteralPath $archivePath -DestinationPath $ageRoot -Force
+          $agePath = Join-Path $ageRoot 'age/age.exe'
+          if (-not (Test-Path -LiteralPath $agePath -PathType Leaf)) {
+            throw "age executable is missing after extraction: $agePath"
+          }
+          & $agePath --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "age executable failed its version check with status $LASTEXITCODE"
+          }
+          "GPLUS_AGE_PATH=$agePath" >> $env:GITHUB_ENV
+          "GPLUS_AGE_VERSION=$($env:AGE_VERSION)" >> $env:GITHUB_ENV
+
+      - name: Validate staging handoff recipient
+        shell: pwsh
+        env:
+          AGE_RECIPIENT: ${{ vars.GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING }}
+        run: |
+          $recipient = [string]$env:AGE_RECIPIENT
+          if ($recipient -notmatch '^age1[a-z0-9]+$') {
+            throw 'Repository variable GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING must contain an age X25519 recipient before a build can run'
+          }
+          Write-Host 'Staging handoff recipient is configured; plaintext package upload remains disabled.'
+
       - name: Setup uv
         uses: astral-sh/setup-uv@c7f87aa956e4c323abf06d5dec078e358f6b4d04 # v6.0.0
         with:
@@ -134,7 +175,7 @@ jobs:
 
           $nodeArch = (node -p 'process.arch').Trim()
           if ($nodeArch -ne 'x64') {
-            throw "win-x64 proof requires x64 Node, got $nodeArch"
+            throw "win-x64 package requires x64 Node, got $nodeArch"
           }
           $hermesPath = 'source/apps/gplus-bot-desktop/vendor/hermes-agent'
           $submoduleStatus = @(git -C source submodule status --recursive)
@@ -171,7 +212,7 @@ jobs:
             apps/gplus-bot-desktop/tests/acceptance-evidence-audit.test.mjs `
             apps/gplus-bot-desktop/tests/gplus-desktop-release-version.test.mjs
 
-      - name: Build unsigned Windows proof
+      - name: Build unsigned Windows package
         shell: pwsh
         working-directory: source
         env:
@@ -214,7 +255,7 @@ jobs:
           })
           $manifest = [ordered]@{
             schemaVersion = 1
-            kind = 'gplus-bot-desktop-staging-windows-proof'
+            kind = 'gplus-bot-desktop-staging-windows-build'
             sourceRepository = 'loulin/gplus'
             sourceRef = $env:SOURCE_REF
             sourceSha = $env:SOURCE_SHA
@@ -227,19 +268,19 @@ jobs:
             nodeArchitecture = $env:NODE_ARCH
             workflowRunId = [int64]$env:RUN_ID
             workflowRunAttempt = [int]$env:RUN_ATTEMPT
-            packageMode = 'unsigned-proof'
+            packageMode = 'unsigned-handoff'
             files = $fileRecords
           }
           $manifestPath = 'staging-build-manifest.json'
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $manifestPath -Encoding utf8
           $summary = @(
-            '### Staging Windows Desktop proof',
+            '### Staging Windows Desktop build',
             '',
             "- Source: ``$($env:SOURCE_SHA)`` ($($env:SOURCE_REF))",
             "- Hermes: ``$($env:HERMES_SHA)``",
             "- Version/build: ``$($package.version)`` / ``$($package.buildNumber)``",
             '- Target: ``win-x64``',
-            '- Package mode: unsigned proof',
+            '- Package mode: unsigned package; encrypted handoff follows',
             '',
             '| File | Bytes | SHA-256 |',
             '| --- | ---: | --- |'
@@ -249,6 +290,67 @@ jobs:
           }
           $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
+      - name: Create encrypted Windows handoff
+        shell: pwsh
+        env:
+          AGE_RECIPIENT: ${{ vars.GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          HERMES_SHA: ${{ steps.source.outputs.hermes_sha }}
+        run: |
+          $sourceRoot = Join-Path $pwd.Path 'source'
+          $targetRoot = Join-Path $sourceRoot 'apps/gplus-bot-desktop/.generated/gplus-bot-desktop-win-x64'
+          $releaseDir = Join-Path $targetRoot 'apps/desktop/release'
+          $buildManifestPath = Join-Path $sourceRoot 'staging-build-manifest.json'
+          $packagePath = Join-Path $sourceRoot 'apps/gplus-bot-desktop/package.json'
+          $package = Get-Content -LiteralPath $packagePath -Raw | ConvertFrom-Json
+          $scriptPath = Join-Path $pwd.Path 'scripts/package-windows-handoff.ps1'
+          & $scriptPath `
+            -SourceRoot $sourceRoot `
+            -TargetRoot $targetRoot `
+            -ReleaseDir $releaseDir `
+            -BuildManifestPath $buildManifestPath `
+            -OutputDirectory (Join-Path $pwd.Path 'handoff-output') `
+            -AgePath $env:GPLUS_AGE_PATH `
+            -Recipient $env:AGE_RECIPIENT `
+            -AgeVersion $env:GPLUS_AGE_VERSION `
+            -SourceRef $env:SOURCE_REF `
+            -SourceSha $env:SOURCE_SHA `
+            -HermesSha $env:HERMES_SHA `
+            -Channel 'staging' `
+            -Target 'win-x64' `
+            -Version ([string]$package.version) `
+            -BuildNumber ([int]$package.buildNumber) `
+            -RunId ([long]$env:GITHUB_RUN_ID) `
+            -RunAttempt ([int]$env:GITHUB_RUN_ATTEMPT)
+          $handoffDirectory = Join-Path $pwd.Path 'handoff-output'
+          $handoffFiles = @(Get-ChildItem -LiteralPath $handoffDirectory -Force -File | Sort-Object Name)
+          $ciphertextFiles = @($handoffFiles | Where-Object { $_.Name.EndsWith('.age', [System.StringComparison]::OrdinalIgnoreCase) })
+          $manifestFiles = @($handoffFiles | Where-Object { $_.Name.EndsWith('.ciphertext-manifest.json', [System.StringComparison]::OrdinalIgnoreCase) })
+          if ($handoffFiles.Count -ne 2 -or $ciphertextFiles.Count -ne 1 -or $manifestFiles.Count -ne 1) {
+            throw 'Handoff output must contain exactly one age ciphertext and one ciphertext manifest'
+          }
+          $ciphertext = $ciphertextFiles[0]
+          $headerBytes = [byte[]]::new(64)
+          $stream = [System.IO.File]::OpenRead($ciphertext.FullName)
+          try {
+            $read = $stream.Read($headerBytes, 0, $headerBytes.Length)
+          } finally {
+            $stream.Dispose()
+          }
+          $header = [System.Text.Encoding]::ASCII.GetString($headerBytes, 0, $read)
+          if (-not $header.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) {
+            throw "Ciphertext header validation failed: $($ciphertext.Name)"
+          }
+          $handoffFiles | ForEach-Object { Write-Host "Handoff output: $($_.Name) ($($_.Length) bytes)" }
+          Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value @(
+            '',
+            '### Encrypted Windows handoff',
+            '',
+            '- Plaintext release files were allow-list packaged and removed after encryption.',
+            '- Download the handoff artifact below and decrypt it on the Windows signing machine.',
+            "- Handoff files: $($handoffFiles.Name -join ', ')"
+          )
+
       - name: Upload sanitized build manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -256,3 +358,21 @@ jobs:
           path: source/staging-build-manifest.json
           if-no-files-found: error
           retention-days: 7
+
+      - name: Upload encrypted Windows handoff
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gplus-bot-desktop-staging-handoff-${{ github.run_id }}
+          path: handoff-output/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Remove plaintext generated package
+        if: always()
+        shell: pwsh
+        run: |
+          $generatedRoot = Join-Path $pwd.Path 'source/apps/gplus-bot-desktop/.generated/gplus-bot-desktop-win-x64'
+          if (Test-Path -LiteralPath $generatedRoot) {
+            Remove-Item -LiteralPath $generatedRoot -Recurse -Force
+          }
