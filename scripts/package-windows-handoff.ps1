@@ -1,13 +1,7 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)]
-  [string] $SourceRoot,
-  [Parameter(Mandatory = $true)]
-  [string] $TargetRoot,
-  [Parameter(Mandatory = $true)]
-  [string] $ReleaseDir,
-  [Parameter(Mandatory = $true)]
-  [string] $BuildManifestPath,
+  [string] $HandoffDirectory,
   [Parameter(Mandatory = $true)]
   [string] $OutputDirectory,
   [Parameter(Mandatory = $true)]
@@ -15,25 +9,7 @@ param(
   [Parameter(Mandatory = $true)]
   [string] $Recipient,
   [Parameter(Mandatory = $true)]
-  [string] $AgeVersion,
-  [Parameter(Mandatory = $true)]
-  [string] $SourceRef,
-  [Parameter(Mandatory = $true)]
-  [string] $SourceSha,
-  [Parameter(Mandatory = $true)]
-  [string] $HermesSha,
-  [Parameter(Mandatory = $true)]
-  [string] $Channel,
-  [Parameter(Mandatory = $true)]
-  [string] $Target,
-  [Parameter(Mandatory = $true)]
-  [string] $Version,
-  [Parameter(Mandatory = $true)]
-  [int] $BuildNumber,
-  [Parameter(Mandatory = $true)]
-  [long] $RunId,
-  [Parameter(Mandatory = $true)]
-  [int] $RunAttempt
+  [string] $AgeVersion
 )
 
 Set-StrictMode -Version Latest
@@ -90,28 +66,6 @@ function Assert-WithinRoot {
     -not $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
   ) {
     throw "$Label must stay under ${resolvedRoot}: $resolvedPath"
-  }
-  return $resolvedPath
-}
-
-function Assert-OutsideRoot {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string] $Path,
-    [Parameter(Mandatory = $true)]
-    [string] $Root,
-    [Parameter(Mandatory = $true)]
-    [string] $Label
-  )
-
-  $resolvedPath = Resolve-FullPath $Path
-  $resolvedRoot = Trim-DirectorySeparators (Resolve-FullPath $Root)
-  $rootPrefix = $resolvedRoot + [System.IO.Path]::DirectorySeparatorChar
-  if (
-    $resolvedPath.Equals($resolvedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
-    $resolvedPath.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
-  ) {
-    throw "$Label must be outside ${resolvedRoot}: $resolvedPath"
   }
   return $resolvedPath
 }
@@ -220,16 +174,59 @@ function Copy-AllowedTree {
   return $files.Count
 }
 
-function Get-FileRecord {
+function Get-Sha512Base64 {
   param(
     [Parameter(Mandatory = $true)]
-    [System.IO.FileInfo] $File
+    [string] $Path
   )
 
-  [ordered]@{
-    path = Get-RelativePortablePath -BasePath $script:StagingRoot -Path $File.FullName
-    size = [int64] $File.Length
-    sha256 = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+  $sha512 = [System.Security.Cryptography.SHA512]::Create()
+  try {
+    $bytes = $sha512.ComputeHash([System.IO.File]::ReadAllBytes($Path))
+  } finally {
+    $sha512.Dispose()
+  }
+  return [Convert]::ToBase64String($bytes)
+}
+
+function Assert-HandoffPayloadManifest {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string] $Root,
+    [Parameter(Mandatory = $true)]
+    $Manifest
+  )
+
+  $records = @($Manifest.files)
+  if ($records.Count -eq 0) { throw 'Handoff manifest files must not be empty' }
+  $expected = @{}
+  foreach ($record in $records) {
+    $relative = [string]$record.path
+    if (
+      [string]::IsNullOrWhiteSpace($relative) -or
+      $relative.Contains('\') -or
+      $relative.StartsWith('/') -or
+      $relative -match '(^|/)\.\.(/|$)|(^|/)\.(/|$)'
+    ) {
+      throw "Handoff manifest payload path is invalid: $relative"
+    }
+    if ($expected.ContainsKey($relative)) { throw "Handoff manifest payload path is duplicated: $relative" }
+    if ($null -eq $record.size -or [int64]$record.size -lt 0) { throw "Handoff manifest payload size is invalid: $relative" }
+    if ([string]$record.sha256 -notmatch '^[0-9a-fA-F]{64}$' -or [string]::IsNullOrWhiteSpace([string]$record.sha512)) { throw "Handoff manifest payload digest is invalid: $relative" }
+    $expected[$relative] = $record
+  }
+
+  $actual = @(Get-ChildItem -LiteralPath $Root -Force -Recurse -File)
+  if ($actual.Count -ne $expected.Count) { throw "Handoff manifest payload file count mismatch: expected $($expected.Count), got $($actual.Count)" }
+  foreach ($file in $actual) {
+    $relative = Get-RelativePortablePath -BasePath $Root -Path $file.FullName
+    if (-not $expected.ContainsKey($relative)) { throw "Unexpected handoff payload file: $relative" }
+    $record = $expected[$relative]
+    $sha256 = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash
+    $sha512 = Get-Sha512Base64 -Path $file.FullName
+    if ([int64]$file.Length -ne [int64]$record.size -or $sha256 -ne ([string]$record.sha256).ToUpperInvariant() -or $sha512 -ne [string]$record.sha512) {
+      throw "Handoff manifest payload digest mismatch: $relative"
+    }
   }
 }
 
@@ -249,222 +246,96 @@ function Get-AgeHeader {
   return [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
 }
 
-foreach ($entry in @(
-    @{ Value = $AgeVersion; Label = 'Age version' },
-    @{ Value = $Recipient; Label = 'Age recipient' },
-    @{ Value = $SourceRef; Label = 'Source ref' },
-    @{ Value = $SourceSha; Label = 'Source SHA' },
-    @{ Value = $HermesSha; Label = 'Hermes SHA' },
-    @{ Value = $Channel; Label = 'Channel' },
-    @{ Value = $Target; Label = 'Target' },
-    @{ Value = $Version; Label = 'Version' }
-  )) {
-  Assert-SafeText -Value $entry.Value -Label $entry.Label
-}
-
-if ($AgeVersion -notmatch '^\d+\.\d+\.\d+$') {
-  throw "Age version is not pinned to a numeric release: $AgeVersion"
-}
-if ($Recipient -notmatch '^age1[a-z0-9]+$') {
-  throw 'Age recipient must be an age X25519 recipient'
-}
-if ($SourceSha -notmatch '^[0-9a-fA-F]{40}$' -or $HermesSha -notmatch '^[0-9a-fA-F]{40}$') {
-  throw 'Source SHA and Hermes SHA must be full 40-character hexadecimal values'
-}
-if ($Channel -ne 'staging' -or $Target -ne 'win-x64') {
-  throw "This handoff packager is limited to staging/win-x64: $Channel/$Target"
-}
-if ($Version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$') {
-  throw "Version is not semver: $Version"
-}
-if ($BuildNumber -lt 1 -or $RunId -lt 1 -or $RunAttempt -lt 1) {
-  throw 'Build number, run ID, and run attempt must be positive'
-}
-if (-not (Test-Path -LiteralPath $AgePath -PathType Leaf)) {
-  throw "Age executable is missing: $AgePath"
-}
-
-$resolvedSourceRoot = Resolve-FullPath $SourceRoot
-$resolvedTargetRoot = Assert-WithinRoot -Path $TargetRoot -Root $resolvedSourceRoot -Label 'Generated target root'
-$resolvedReleaseDir = Assert-WithinRoot -Path $ReleaseDir -Root $resolvedTargetRoot -Label 'Release directory'
-$resolvedBuildManifestPath = Assert-WithinRoot -Path $BuildManifestPath -Root $resolvedSourceRoot -Label 'Build manifest'
-$resolvedOutputDirectory = Assert-OutsideRoot -Path $OutputDirectory -Root $resolvedSourceRoot -Label 'Handoff output directory'
-
-foreach ($requiredPath in @($resolvedSourceRoot, $resolvedTargetRoot, $resolvedReleaseDir, $resolvedBuildManifestPath)) {
-  if (-not (Test-Path -LiteralPath $requiredPath)) {
-    throw "Required handoff input is missing: $requiredPath"
+$resolvedHandoffDirectory = Resolve-FullPath $HandoffDirectory
+  if (-not (Test-Path -LiteralPath $resolvedHandoffDirectory -PathType Container)) {
+    throw "Handoff directory is missing: $resolvedHandoffDirectory"
   }
-}
-if (-not (Test-Path -LiteralPath $resolvedBuildManifestPath -PathType Leaf)) {
-  throw "Build manifest is not a file: $resolvedBuildManifestPath"
-}
-
-$temporaryRoot = $null
-try {
-  $buildManifest = Get-Content -LiteralPath $resolvedBuildManifestPath -Raw | ConvertFrom-Json
-  if ([string]$buildManifest.sourceRepository -ne 'loulin/gplus') {
-    throw 'Build manifest source repository is not loulin/gplus'
+  $payloadRoot = Join-Path $resolvedHandoffDirectory 'payload'
+  $manifestPath = Join-Path $resolvedHandoffDirectory 'handoff-manifest.json'
+  $publicManifestPath = Join-Path $resolvedHandoffDirectory 'public-manifest.json'
+  if (-not (Test-Path -LiteralPath $payloadRoot -PathType Container)) { throw "Handoff payload is missing: $payloadRoot" }
+  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Handoff manifest is missing: $manifestPath" }
+  if (-not (Test-Path -LiteralPath $publicManifestPath -PathType Leaf)) { throw "Handoff public manifest is missing: $publicManifestPath" }
+  $handoffManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+  foreach ($field in @('sourceRepository', 'app', 'profile', 'channel', 'target', 'sourceSha', 'version', 'buildNumber', 'workflowRunId', 'workflowRunAttempt', 'artifactName')) {
+    if ($null -eq $handoffManifest.$field) { throw "Handoff manifest is missing field: $field" }
   }
-  foreach ($field in @('sourceRef', 'sourceSha', 'hermesSha', 'channel', 'target', 'version', 'buildNumber')) {
-    if ($null -eq $buildManifest.$field) {
-      throw "Build manifest is missing field: $field"
+  if ([string]$handoffManifest.sourceRepository -ne 'loulin/gplus') { throw 'Handoff sourceRepository must be loulin/gplus' }
+  if ([string]$handoffManifest.app -notin @('gplus-bot-desktop', 'libre-reader')) { throw "Unsupported handoff app: $($handoffManifest.app)" }
+  if ([string]$handoffManifest.profile -notin @('staging', 'production')) { throw "Unsupported handoff profile: $($handoffManifest.profile)" }
+  if ([string]$handoffManifest.target -notin @('win-x64', 'win-arm64', 'win-ia32')) { throw "Unsupported handoff target: $($handoffManifest.target)" }
+  if ([string]$handoffManifest.packageMode -ne 'unsigned-build-handoff') { throw "Unsupported handoff packageMode: $($handoffManifest.packageMode)" }
+  if ([string]$handoffManifest.sourceSha -notmatch '^[0-9a-fA-F]{40}$') { throw 'Handoff sourceSha must be a full commit SHA' }
+  if ([int64]$handoffManifest.workflowRunId -lt 1 -or [int]$handoffManifest.workflowRunAttempt -lt 1) { throw 'Handoff workflow run identity must be positive' }
+  $expectedArtifactName = "$($handoffManifest.app)-$($handoffManifest.profile)-$($handoffManifest.target)-handoff-$($handoffManifest.workflowRunId)"
+  if ([string]$handoffManifest.artifactName -ne $expectedArtifactName) { throw 'Handoff artifactName does not match app/profile/target/run' }
+  $publicManifest = Get-Content -LiteralPath $publicManifestPath -Raw | ConvertFrom-Json
+  foreach ($field in @('schemaVersion', 'kind', 'sourceRepository', 'app', 'profile', 'channel', 'target', 'sourceRef', 'sourceSha', 'version', 'buildNumber', 'workflowRunId', 'workflowRunAttempt', 'artifactName', 'packageMode')) {
+    if ([string]$publicManifest.$field -cne [string]$handoffManifest.$field) {
+      throw "Public manifest does not match handoff manifest: $field"
     }
   }
-  if ([string]$buildManifest.sourceRef -ne $SourceRef) {
-    throw 'Build manifest sourceRef does not match workflow input'
+  [int64] $payloadBytes = 0
+  foreach ($record in @($handoffManifest.files)) { $payloadBytes += [int64]$record.size }
+  if ([int]$publicManifest.payloadFileCount -ne @($handoffManifest.files).Count -or [int64]$publicManifest.payloadBytes -ne $payloadBytes) {
+    throw 'Public manifest payload summary does not match handoff manifest'
   }
-  if ([string]$buildManifest.sourceSha -ne $SourceSha.ToLowerInvariant()) {
-    throw 'Build manifest sourceSha does not match checked out source'
+  if ([string]::IsNullOrWhiteSpace([string]$handoffManifest.payloadRoot)) { throw 'Handoff manifest payloadRoot is missing' }
+  $payloadRootValue = [string]$handoffManifest.payloadRoot
+  if ($payloadRootValue.Contains('\') -or $payloadRootValue.StartsWith('/') -or $payloadRootValue -match '(^|/)\.\.(/|$)|(^|/)\.(/|$)') {
+    throw "Handoff manifest payloadRoot is not a portable relative path: $payloadRootValue"
   }
-  if ([string]$buildManifest.hermesSha -ne $HermesSha.ToLowerInvariant()) {
-    throw 'Build manifest hermesSha does not match checked out Hermes'
-  }
-  if ([string]$buildManifest.channel -ne $Channel -or [string]$buildManifest.target -ne $Target) {
-    throw 'Build manifest channel or target does not match handoff'
-  }
-  if ([string]$buildManifest.version -ne $Version -or [int]$buildManifest.buildNumber -ne $BuildNumber) {
-    throw 'Build manifest version or buildNumber does not match handoff'
-  }
+  $manifestPayloadRoot = Join-Path $payloadRoot ([string]$handoffManifest.payloadRoot)
+  if (-not (Test-Path -LiteralPath $manifestPayloadRoot -PathType Container)) { throw "Handoff manifest payloadRoot is missing: $manifestPayloadRoot" }
+  Assert-HandoffPayloadManifest -Root $manifestPayloadRoot -Manifest $handoffManifest
+  Assert-NoReparseTree -Root $payloadRoot -Label 'handoff payload'
+  if (-not (Test-Path -LiteralPath $AgePath -PathType Leaf)) { throw "Age executable is missing: $AgePath" }
+  Assert-SafeText -Value $AgeVersion -Label 'Age version'
+  Assert-SafeText -Value $Recipient -Label 'Age recipient'
+  if ($AgeVersion -notmatch '^\d+\.\d+\.\d+$' -or $Recipient -notmatch '^age1[a-z0-9]+$') { throw 'Age version or recipient is invalid' }
 
-  $outputParent = Split-Path -Parent $resolvedOutputDirectory
-  New-Item -ItemType Directory -Path $outputParent -Force | Out-Null
-  if (Test-Path -LiteralPath $resolvedOutputDirectory) {
-    if (@(Get-ChildItem -LiteralPath $resolvedOutputDirectory -Force).Count -ne 0) {
-      throw "Handoff output directory must be empty: $resolvedOutputDirectory"
+  $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("gplus-windows-handoff-" + [guid]::NewGuid().ToString('N'))
+  try {
+    $archiveRoot = Join-Path $temporaryRoot 'archive'
+    New-Item -ItemType Directory -Path $archiveRoot -Force | Out-Null
+    $script:StagingRoot = $archiveRoot
+    Copy-AllowedTree -SourcePath $payloadRoot -DestinationRelativePath 'payload' -Label 'handoff payload' | Out-Null
+    Copy-AllowedFile -SourcePath $manifestPath -DestinationRelativePath 'handoff-manifest.json'
+    $archivePath = Join-Path $temporaryRoot 'handoff.zip'
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($archiveRoot, $archivePath, [System.IO.Compression.CompressionLevel]::Fastest, $false)
+    $resolvedOutputDirectory = Resolve-FullPath $OutputDirectory
+    if (Test-Path -LiteralPath $resolvedOutputDirectory) {
+      if (@(Get-ChildItem -LiteralPath $resolvedOutputDirectory -Force).Count -ne 0) {
+        throw "Handoff output directory must be empty: $resolvedOutputDirectory"
+      }
+    } else {
+      New-Item -ItemType Directory -Path $resolvedOutputDirectory -Force | Out-Null
     }
-  } else {
-    New-Item -ItemType Directory -Path $resolvedOutputDirectory -Force | Out-Null
-  }
-
-  $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("gplus-desktop-handoff-" + [guid]::NewGuid().ToString('N'))
-  $script:StagingRoot = Join-Path $temporaryRoot 'payload'
-  $archivePath = Join-Path $temporaryRoot 'handoff.zip'
-  $handoffName = "gplus-bot-desktop-staging-$Target-$Version-run-$RunId.zip.age"
-  $ciphertextPath = Join-Path $resolvedOutputDirectory $handoffName
-  $publicManifestPath = Join-Path $resolvedOutputDirectory "gplus-bot-desktop-staging-$Target-$Version-run-$RunId.ciphertext-manifest.json"
-  New-Item -ItemType Directory -Path $script:StagingRoot -Force | Out-Null
-
-  $prepackagedPath = Join-Path $resolvedReleaseDir 'win-unpacked'
-  if (-not (Test-Path -LiteralPath $prepackagedPath -PathType Container)) {
-    throw "Prepackaged Windows directory is missing: $prepackagedPath"
-  }
-  Copy-AllowedTree -SourcePath $prepackagedPath -DestinationRelativePath 'prepackaged/win-unpacked' -Label 'win-unpacked payload' | Out-Null
-
-  $builderPackagePath = Join-Path $resolvedTargetRoot 'apps/desktop/package.json'
-  Copy-AllowedFile -SourcePath $builderPackagePath -DestinationRelativePath 'builder/package.json'
-  foreach ($scriptName in @('notarize.cjs', 'notarize-artifact.cjs', 'notarize-artifact-hook.cjs', 'sign-win-retry.cjs')) {
-    Copy-AllowedFile -SourcePath (Join-Path $resolvedTargetRoot ("apps/desktop/scripts/$scriptName")) -DestinationRelativePath "builder/scripts/$scriptName"
-  }
-
-  $latestManifestPath = Join-Path $resolvedReleaseDir 'latest.yml'
-  Copy-AllowedFile -SourcePath $latestManifestPath -DestinationRelativePath 'reference/latest.yml'
-  $blockmaps = @(Get-ChildItem -LiteralPath $resolvedReleaseDir -Force -File | Where-Object { $_.Name.EndsWith('.blockmap', [System.StringComparison]::OrdinalIgnoreCase) })
-  if ($blockmaps.Count -eq 0) {
-    throw "No Windows blockmap was found in release directory: $resolvedReleaseDir"
-  }
-  foreach ($blockmap in $blockmaps) {
-    Copy-AllowedFile -SourcePath $blockmap.FullName -DestinationRelativePath "reference/$($blockmap.Name)"
-  }
-  Copy-AllowedFile -SourcePath $resolvedBuildManifestPath -DestinationRelativePath 'build/staging-build-manifest.json'
-
-  $payloadFiles = @(Get-ChildItem -LiteralPath $script:StagingRoot -Force -Recurse -File | Sort-Object FullName)
-  if ($payloadFiles.Count -eq 0) {
-    throw 'Handoff payload contains no files'
-  }
-  $fileRecords = @($payloadFiles | ForEach-Object { Get-FileRecord $_ })
-  [int64] $plaintextBytes = 0
-  foreach ($file in $payloadFiles) {
-    $plaintextBytes += [int64] $file.Length
-  }
-  if ($plaintextBytes -gt [int64] 3GB) {
-    throw "Plaintext handoff exceeds 3 GiB: $plaintextBytes bytes"
-  }
-
-  $innerManifestPath = Join-Path $script:StagingRoot 'handoff-manifest.json'
-  $innerManifest = [ordered]@{
-    schemaVersion = 1
-    kind = 'gplus-bot-desktop-staging-windows-encrypted-handoff'
-    sourceRepository = 'loulin/gplus'
-    sourceRef = $SourceRef
-    sourceSha = $SourceSha.ToLowerInvariant()
-    hermesSha = $HermesSha.ToLowerInvariant()
-    channel = $Channel
-    target = $Target
-    version = $Version
-    buildNumber = $BuildNumber
-    workflowRunId = $RunId
-    workflowRunAttempt = $RunAttempt
-    packageMode = 'unsigned-prepackaged-handoff'
-    archiveFormat = 'zip'
-    ageVersion = $AgeVersion
-    ciphertextName = $handoffName
-    files = $fileRecords
-  }
-  Write-Utf8NoBom -Path $innerManifestPath -Content (($innerManifest | ConvertTo-Json -Depth 20) + "`n")
-  $innerManifestItem = Get-Item -LiteralPath $innerManifestPath -Force
-  $innerManifestHash = (Get-FileHash -LiteralPath $innerManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-
-  Add-Type -AssemblyName System.IO.Compression.FileSystem
-  [System.IO.Compression.ZipFile]::CreateFromDirectory(
-    $script:StagingRoot,
-    $archivePath,
-    [System.IO.Compression.CompressionLevel]::Fastest,
-    $false
-  )
-  if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) {
-    throw "Handoff archive was not created: $archivePath"
-  }
-
-  & $AgePath '-r' $Recipient '-o' $ciphertextPath $archivePath | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    throw "age failed to encrypt the handoff with status $LASTEXITCODE"
-  }
-  if (-not (Test-Path -LiteralPath $ciphertextPath -PathType Leaf)) {
-    throw "Encrypted handoff was not created: $ciphertextPath"
-  }
-  $ageHeader = Get-AgeHeader $ciphertextPath
-  if (-not $ageHeader.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) {
-    throw 'Encrypted handoff does not have an age v1 header'
-  }
-
-  $ciphertextItem = Get-Item -LiteralPath $ciphertextPath -Force
-  if ($ciphertextItem.Length -le 0 -or $ciphertextItem.Length -gt [int64] 2GB) {
-    throw "Ciphertext handoff size is outside the allowed range: $($ciphertextItem.Length) bytes"
-  }
-  $publicManifest = [ordered]@{
-    schemaVersion = 1
-    kind = 'gplus-bot-desktop-staging-windows-ciphertext-manifest'
-    sourceRepository = 'loulin/gplus'
-    sourceRef = $SourceRef
-    sourceSha = $SourceSha.ToLowerInvariant()
-    hermesSha = $HermesSha.ToLowerInvariant()
-    channel = $Channel
-    target = $Target
-    version = $Version
-    buildNumber = $BuildNumber
-    workflowRunId = $RunId
-    workflowRunAttempt = $RunAttempt
-    packageMode = 'unsigned-prepackaged-handoff'
-    ageVersion = $AgeVersion
-    ciphertext = [ordered]@{
-      name = $handoffName
-      size = [int64] $ciphertextItem.Length
-      sha256 = (Get-FileHash -LiteralPath $ciphertextPath -Algorithm SHA256).Hash.ToLowerInvariant()
-      format = 'age-encrypted-zip'
+    $ciphertextPath = Join-Path $resolvedOutputDirectory 'encrypted-handoff.age'
+    & $AgePath '-r' $Recipient '-o' $ciphertextPath $archivePath | Out-Host
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $ciphertextPath -PathType Leaf)) { throw 'age failed to encrypt handoff' }
+    $header = Get-AgeHeader $ciphertextPath
+    if (-not $header.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) { throw 'Encrypted handoff does not have an age v1 header' }
+    $ciphertextItem = Get-Item -LiteralPath $ciphertextPath -Force
+    if ($ciphertextItem.Length -le 0 -or $ciphertextItem.Length -gt [int64] 2GB) { throw "Ciphertext handoff size is outside the allowed range: $($ciphertextItem.Length) bytes" }
+    $public = $publicManifest
+    $public | Add-Member -NotePropertyName ciphertext -NotePropertyValue ([ordered]@{
+      name = 'encrypted-handoff.age'; size = [int64]$ciphertextItem.Length;
+      sha256 = (Get-FileHash -LiteralPath $ciphertextPath -Algorithm SHA256).Hash.ToLowerInvariant();
+      sha512 = Get-Sha512Base64 -Path $ciphertextPath; format = 'age-encrypted-zip'
+    }) -Force
+    $public | Add-Member -NotePropertyName ageVersion -NotePropertyValue $AgeVersion -Force
+    $publicPath = Join-Path $resolvedOutputDirectory 'ciphertext-manifest.json'
+    Write-Utf8NoBom -Path $publicPath -Content (($public | ConvertTo-Json -Depth 20) + "`n")
+    $outputItems = @(Get-ChildItem -LiteralPath $resolvedOutputDirectory -Force)
+    $unexpectedItems = @($outputItems | Where-Object {
+        $_.PSIsContainer -or $_.Name -notin @('encrypted-handoff.age', 'ciphertext-manifest.json')
+      })
+    if ($outputItems.Count -ne 2 -or $unexpectedItems.Count -ne 0) {
+      throw 'Handoff output must contain only encrypted-handoff.age and ciphertext-manifest.json'
     }
-    plaintext = [ordered]@{
-      fileCount = [int] ($fileRecords.Count + 1)
-      payloadBytes = $plaintextBytes
-      manifestName = 'handoff-manifest.json'
-      manifestSize = [int64] $innerManifestItem.Length
-      manifestSha256 = $innerManifestHash
-      layout = 'prepackaged/win-unpacked plus builder and reference metadata'
-    }
+    Write-Output ($public | ConvertTo-Json -Depth 20)
+  } finally {
+    if (Test-Path -LiteralPath $temporaryRoot) { Remove-Item -LiteralPath $temporaryRoot -Recurse -Force }
   }
-  Write-Utf8NoBom -Path $publicManifestPath -Content (($publicManifest | ConvertTo-Json -Depth 20) + "`n")
-  Write-Output ($publicManifest | ConvertTo-Json -Depth 20)
-} finally {
-  if ($temporaryRoot -and (Test-Path -LiteralPath $temporaryRoot)) {
-    Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
-  }
-}

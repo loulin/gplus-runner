@@ -1,0 +1,322 @@
+name: Windows Desktop Build Handoff
+
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        description: Application to build
+        required: true
+        default: gplus-bot-desktop
+        type: choice
+        options: [gplus-bot-desktop, libre-reader]
+      profile:
+        description: Release profile
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      target:
+        description: One Windows target
+        required: true
+        default: win-x64
+        type: choice
+        options: [win-x64, win-arm64, win-ia32]
+      source_ref:
+        description: Branch, tag, or full commit SHA in loulin/gplus
+        required: true
+        default: develop
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-desktop-${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Windows Desktop handoff
+    runs-on: windows-latest
+    environment: ${{ inputs.profile }}
+    timeout-minutes: 360
+    env:
+      CI: 'true'
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      APPLICATION: ${{ inputs.application }}
+      PROFILE: ${{ inputs.profile }}
+      TARGET: ${{ inputs.target }}
+      SOURCE_REF: ${{ inputs.source_ref }}
+    steps:
+      - name: Checkout runner repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create read-only source token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
+          private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
+          owner: loulin
+          repositories: gplus
+          permission-contents: read
+
+      - name: Resolve source ref before checkout
+        id: source
+        shell: pwsh
+        env:
+          SOURCE_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          $ref = $env:SOURCE_REF.Trim()
+          if ([string]::IsNullOrWhiteSpace($ref) -or $ref.Contains("`r") -or $ref.Contains("`n")) { throw 'source_ref must be a non-empty single-line value' }
+          $releaseTag = '^(?:gplus-bot-desktop|libre-reader)-v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$'
+          if ($env:PROFILE -eq 'production' -and $ref -ne 'master' -and $ref -notmatch '^[0-9a-fA-F]{40}$' -and $ref -notmatch $releaseTag) { throw 'production source_ref must be master, a full SHA, or a canonical application release tag' }
+          $encoded = [uri]::EscapeDataString($ref)
+          $headers = @{ Authorization = "Bearer $env:SOURCE_TOKEN"; Accept = 'application/vnd.github+json' }
+          $commit = Invoke-RestMethod -Headers $headers -Uri "https://api.github.com/repos/loulin/gplus/commits/$encoded"
+          $sha = [string]$commit.sha
+          if ($sha -notmatch '^[0-9a-f]{40}$') { throw "GitHub did not return a full source SHA: $sha" }
+          "source_sha=$($sha.ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+          Write-Host "Resolved source ref $ref to $sha"
+
+      - name: Checkout private source at immutable SHA
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: loulin/gplus
+          ref: ${{ steps.source.outputs.source_sha }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          # Application adapters verify annotated release tags and their peeled
+          # commits during production preparation, so tags must be available
+          # even though the checkout itself is pinned to the resolved SHA.
+          fetch-depth: 0
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Validate matching Windows target runner
+        shell: pwsh
+        run: |
+          $nodeArch = (node -p 'process.arch').Trim()
+          $expected = @{ 'win-x64' = 'x64'; 'win-arm64' = 'arm64'; 'win-ia32' = 'ia32' }[$env:TARGET]
+          if (-not $expected) { throw "Unsupported target: $env:TARGET" }
+          if ($env:TARGET -ne 'win-x64') { throw "No matching hosted Windows runner is configured for $env:TARGET; refusing cross-build" }
+          if ($nodeArch -ne $expected) { throw "Target $env:TARGET requires $expected Node, got $nodeArch" }
+          "SOURCE_SHA=${{ steps.source.outputs.source_sha }}" >> $env:GITHUB_ENV
+
+      - name: Configure build caches
+        shell: pwsh
+        run: |
+          $npmCache = Join-Path $env:RUNNER_TEMP 'gplus-npm-cache'
+          $uvCache = Join-Path $env:RUNNER_TEMP 'gplus-uv-cache'
+          $electronCache = Join-Path $env:RUNNER_TEMP 'gplus-electron-cache'
+          $builderCache = Join-Path $env:RUNNER_TEMP 'gplus-electron-builder-cache'
+          "NPM_CONFIG_CACHE=$npmCache" >> $env:GITHUB_ENV
+          "UV_CACHE_DIR=$uvCache" >> $env:GITHUB_ENV
+          "electron_config_cache=$electronCache" >> $env:GITHUB_ENV
+          "ELECTRON_BUILDER_CACHE=$builderCache" >> $env:GITHUB_ENV
+          "NPM_CONFIG_AUDIT=false" >> $env:GITHUB_ENV
+          "NPM_CONFIG_FUND=false" >> $env:GITHUB_ENV
+          "NPM_CONFIG_PREFER_OFFLINE=true" >> $env:GITHUB_ENV
+
+      - name: Restore npm download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-npm-cache
+          key: gplus-runner-npm-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/package-rewrite.mjs', 'source/apps/libre-reader/pnpm-lock.yaml') }}
+          restore-keys: |
+            gplus-runner-npm-${{ runner.os }}-${{ inputs.application }}-
+            gplus-runner-npm-${{ runner.os }}-
+
+      - name: Restore uv download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-uv-cache
+          key: gplus-runner-uv-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/python-dependency-profile.mjs', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/pyproject.toml', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/uv.lock') }}
+          restore-keys: |
+            gplus-runner-uv-${{ runner.os }}-${{ inputs.application }}-
+            gplus-runner-uv-${{ runner.os }}-
+
+      - name: Restore Electron download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-cache
+          key: gplus-runner-electron-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+          restore-keys: |
+            gplus-runner-electron-${{ runner.os }}-${{ inputs.application }}-
+            gplus-runner-electron-${{ runner.os }}-
+
+      - name: Restore Electron Builder tool cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-builder-cache
+          key: gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+          restore-keys: |
+            gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.application }}-
+            gplus-runner-electron-builder-${{ runner.os }}-
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: x64
+
+      - name: Setup packaging Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          architecture: x64
+
+      - name: Validate packaging Python layout
+        shell: pwsh
+        run: |
+          $pythonPath = (Get-Command python.exe).Source
+          if (-not $pythonPath -or -not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
+            throw "GitHub Windows Python executable is unavailable: $pythonPath"
+          }
+          $pythonRoot = Split-Path -Parent $pythonPath
+          $python3Path = Join-Path $pythonRoot 'python3.exe'
+          if (Test-Path -LiteralPath $python3Path) {
+            $python3Item = Get-Item -LiteralPath $python3Path
+            if ($python3Item.PSIsContainer -or (($python3Item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+              Remove-Item -LiteralPath $python3Path -Force -Recurse
+            }
+          }
+          if (Test-Path -LiteralPath $python3Path) {
+            throw "Packaging Python python3.exe could not be removed from the temporary runner: $python3Path"
+          }
+          "GPLUS_OFFLINE_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+          & $pythonPath --version
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Validate uv tool
+        shell: pwsh
+        run: |
+          $uvPath = (Get-Command uv.exe).Source
+          if (-not $uvPath -or -not (Test-Path -LiteralPath $uvPath -PathType Leaf)) {
+            throw "uv executable is unavailable: $uvPath"
+          }
+          "GPLUS_OFFLINE_UV=$uvPath" >> $env:GITHUB_ENV
+          & $uvPath --version
+
+      - name: Fetch locked Hermes release tag
+        if: inputs.application == 'gplus-bot-desktop'
+        shell: pwsh
+        working-directory: source
+        run: |
+          $lock = Get-Content -LiteralPath 'apps/gplus-bot-desktop/vendor/hermes-source-lock.json' -Raw | ConvertFrom-Json
+          $tag = [string]$lock.upstream.tag
+          $expectedTagObject = [string]$lock.upstream.tagObject
+          $expectedCommit = [string]$lock.upstream.commit
+          if ($tag -notmatch '^v[0-9]+(?:\.[0-9]+){2,3}$' -or $expectedTagObject -notmatch '^[0-9a-f]{40}$' -or $expectedCommit -notmatch '^[0-9a-f]{40}$') {
+            throw 'Hermes source lock contains invalid release identity'
+          }
+          $hermesPath = 'apps/gplus-bot-desktop/vendor/hermes-agent'
+          git -C $hermesPath fetch --no-recurse-submodules origin "refs/tags/$tag`:refs/tags/$tag"
+          if ($LASTEXITCODE -ne 0) { throw "Unable to fetch locked Hermes tag: $tag" }
+          $actualTagObject = (git -C $hermesPath rev-parse "refs/tags/$tag`^{tag}").Trim().ToLowerInvariant()
+          $actualCommit = (git -C $hermesPath rev-parse "$tag`^{commit}").Trim().ToLowerInvariant()
+          if ($actualTagObject -ne $expectedTagObject -or $actualCommit -ne $expectedCommit) {
+            throw "Hermes tag identity does not match source lock: $tag"
+          }
+
+      - name: Setup age
+        id: age
+        shell: pwsh
+        env:
+          AGE_VERSION: '1.2.1'
+          AGE_ARCHIVE_SHA256: 46db0db71f146061f7c8fffa912cb806aef1bc8450e27a3abc1744f0591b89fb
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP "age-v$env:AGE_VERSION-windows-amd64.zip"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/FiloSottile/age/releases/download/v$env:AGE_VERSION/age-v$env:AGE_VERSION-windows-amd64.zip" -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $env:AGE_ARCHIVE_SHA256) { throw 'age archive SHA-256 mismatch' }
+          $root = Join-Path $env:RUNNER_TEMP "age-v$env:AGE_VERSION-windows-amd64"
+          Expand-Archive $archive $root -Force
+          $agePath = Join-Path $root 'age/age.exe'
+          if (-not (Test-Path $agePath -PathType Leaf)) { throw 'age executable is missing' }
+          "GPLUS_AGE_PATH=$agePath" >> $env:GITHUB_ENV
+          "GPLUS_AGE_VERSION=$env:AGE_VERSION" >> $env:GITHUB_ENV
+
+      - name: Install filtered dependencies
+        shell: pwsh
+        working-directory: source
+        run: |
+          corepack enable
+          if ($env:APPLICATION -eq 'gplus-bot-desktop') {
+            corepack pnpm install --filter 'gplus-bot-desktop...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
+          } else {
+            corepack pnpm install --filter 'libre-reader...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
+          }
+
+      - name: Prepare application handoff
+        shell: pwsh
+        working-directory: source
+        run: |
+          $output = Join-Path $pwd.Path '.windows-handoff'
+          $package = if ($env:APPLICATION -eq 'gplus-bot-desktop') { 'gplus-bot-desktop' } else { 'libre-reader' }
+          corepack pnpm --filter $package run release:prepare-handoff -- --profile $env:PROFILE --target $env:TARGET --source-ref $env:SOURCE_REF --source-sha $env:SOURCE_SHA --workflow-run-id $env:GITHUB_RUN_ID --output $output
+
+      - name: Create encrypted handoff
+        shell: pwsh
+        env:
+          AGE_RECIPIENT: ${{ vars.GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING }}
+        run: |
+          if ($env:PROFILE -eq 'production') { $env:AGE_RECIPIENT = '${{ vars.GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_PRODUCTION }}' }
+          if ($env:AGE_RECIPIENT -notmatch '^age1[a-z0-9]+$') { throw 'Missing age recipient for selected profile' }
+          & "$pwd/scripts/package-windows-handoff.ps1" -HandoffDirectory "$pwd/source/.windows-handoff" -OutputDirectory "$pwd/handoff-output" -AgePath $env:GPLUS_AGE_PATH -Recipient $env:AGE_RECIPIENT -AgeVersion $env:GPLUS_AGE_VERSION
+
+      - name: Upload encrypted handoff artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-handoff-${{ github.run_id }}
+          path: |
+            handoff-output/encrypted-handoff.age
+            handoff-output/ciphertext-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+      - name: Write build summary
+        shell: pwsh
+        run: |
+          $manifest = Get-Content -Raw "$pwd/handoff-output/ciphertext-manifest.json" | ConvertFrom-Json
+          @('### Windows Desktop handoff', '', "- Application: $env:APPLICATION", "- Profile/target: $env:PROFILE / $env:TARGET", "- Source: $env:SOURCE_SHA ($env:SOURCE_REF)", "- Version/build: $($manifest.version) / $($manifest.buildNumber)", "- Artifact: $env:APPLICATION-$env:PROFILE-$env:TARGET-handoff-$env:GITHUB_RUN_ID", "- Ciphertext SHA-256: $($manifest.ciphertext.sha256)") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Remove plaintext handoff
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$pwd/source/.windows-handoff") { Remove-Item "$pwd/source/.windows-handoff" -Recurse -Force }
+
+      - name: Save npm download cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-npm-cache
+          key: gplus-runner-npm-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/package-rewrite.mjs', 'source/apps/libre-reader/pnpm-lock.yaml') }}
+
+      - name: Save uv download cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-uv-cache
+          key: gplus-runner-uv-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/python-dependency-profile.mjs', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/pyproject.toml', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/uv.lock') }}
+
+      - name: Save Electron download cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-cache
+          key: gplus-runner-electron-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+
+      - name: Save Electron Builder tool cache
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-builder-cache
+          key: gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}

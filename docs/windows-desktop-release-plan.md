@@ -1,15 +1,15 @@
-# Gplus Bot Desktop Windows 构建与发布计划
+# Windows Desktop 多应用构建与发布计划
 
 本文是 `loulin/gplus-runner` 的操作真源。它记录已经验证的跨仓库构建过程、
 当前安全边界，以及从 Staging 构建继续到本地 Windows 签名、七牛上传和
 Production 发布所需的工作。公开 runner 只保存自动化脚本和文档，Gplus Bot
-Desktop 源码仍在私有仓库 `loulin/gplus`。
+Desktop 与 Libre Reader 源码仍在私有仓库 `loulin/gplus`。
 
 ## 1. 目标与边界
 
 目标是利用 GitHub 的原生 Windows runner 处理网络和构建工作，再把受保护的
 构建上下文交给可使用 Certum SimplySign 的 Windows 机器完成最终签名和发布。
-当前流程只覆盖第一阶段：
+当前流程按单次 app/profile/target 覆盖第一阶段：
 
 ```text
 private loulin/gplus
@@ -20,7 +20,7 @@ public gplus-runner workflow_dispatch(source_ref)
         |
         | windows-latest x64
         v
-checkout -> Hermes -> filtered dependencies -> JS smoke -> unsigned package
+resolve SHA -> checkout -> filtered dependencies -> application prepare adapter
         |
         v
 allow-list package -> age-encrypted handoff
@@ -48,9 +48,9 @@ sanitized manifest + ciphertext artifact
 - 仓库：[loulin/gplus-runner](https://github.com/loulin/gplus-runner)
 - 默认分支：`main`
 - 可见性：Public
-- 当前 workflow：`.github/workflows/build-staging.yml`（`Staging Windows Desktop Build`）
-- 当前 target：`win-x64`
-- 当前 channel：`staging`
+- 当前 workflow：`.github/workflows/build-windows-desktop.yml`（`Windows Desktop Build Handoff`）
+- 支持输入：`gplus-bot-desktop`、`libre-reader`，`staging`、`production`，以及三个 Windows target
+- 当前 hosted runner 已启用：`win-x64`；arm64/ia32 在匹配 runner 配置前显式失败
 - App 名称：`gplus-source-reader`
 
 ### 2.2 GitHub App 权限
@@ -72,44 +72,45 @@ GPLUS_SOURCE_READER_PRIVATE_KEY
 提交记录。App 不需要 Issues、Pull requests、Actions、Deployments、Packages
 或 Administration 权限。
 
-## 3. 当前 Staging workflow
+## 3. 当前统一 Workflow
 
 ### 3.1 输入约定
 
-workflow 只接受 `workflow_dispatch`，输入为：
+Workflow 只接受 `workflow_dispatch`，每次只构建一个组合：
 
 ```text
-source_ref: private loulin/gplus branch name or full 40-character commit SHA
-default: develop
+application: gplus-bot-desktop | libre-reader
+profile: staging | production
+target: win-x64 | win-arm64 | win-ia32
+source_ref: private loulin/gplus branch, tag, or full 40-character commit SHA
 ```
 
-`develop` 适合日常验证，但不是不可变输入。发布或问题复现应使用完整 SHA。
-`--ref main` 是 public runner workflow 的分支，不是应用源码分支。
+`source_ref` 会先通过 GitHub API 解析成完整 SHA，checkout 只使用解析后的 SHA。
+`staging` 可选择分支、Tag 或 SHA；正式发布仍由应用 adapter 要求既有 release
+identity。`production` 输入只允许 `master`、release Tag 或完整 SHA，应用 adapter
+还会验证版本对应的 annotated Tag、tag object 和 peeled commit。`--ref main` 是
+public runner workflow 的分支，不是应用源码分支。
 
 ### 3.2 执行顺序
 
 1. checkout `gplus-runner`，并关闭 credential persistence。
 2. 使用 `actions/create-github-app-token` 创建只读、短生命周期的源码 token。
-3. 将 `loulin/gplus` checkout 到临时 `source/` 目录，按 `source_ref` 固定版本，
-   初始化 Hermes submodule，并关闭 credential persistence。
-4. 在 `windows-latest` 上安装固定版本 `age`、Node.js 24、Python 3.13 x64 和 uv。
-5. 校验 staging age recipient 已配置；没有公钥时在构建前失败。
-6. 清理 hosted Python 的 `python3.exe` 重解析点，确认实际 Python 可执行文件，
-   将路径传给 Desktop 的离线依赖准备逻辑。
-7. 从私有仓库的 `hermes-source-lock.json` 读取锁定的 Hermes tag，并只 fetch 该 tag。
-8. 校验源码 commit、Hermes submodule commit、Node architecture 和 submodule 状态。
-9. 使用 frozen lockfile 安装 `gplus-bot-desktop...` filtered workspace，并构建
-   `@gplus/bot-contracts`。
-10. 运行 Desktop JavaScript contract smoke tests。
-11. 调用私有仓库的 `run-desktop-release-target.mjs win-x64`，固定 staging feed/API，
-    并设置 `DESKTOP_WIN_SKIP_SIGN_AND_EDIT=1` 生成 unsigned NSIS 和 ZIP package。
-12. 对生成的 package、Electron runtime、`app.asar` 和应用脚本执行打包前置校验，
-    包括 Windows nested asar path、应用身份和 ByteNode 禁止规则。
-13. 使用 `scripts/package-windows-handoff.ps1` 只复制 allow-list 中的
-    `win-unpacked`、Builder 配置/签名钩子、参考 metadata 和脱敏 manifest。
-14. 使用固定 `age` 版本和 staging recipient 加密 handoff，检查 age header、大小和
-    SHA-256 后上传 ciphertext artifact；不上传任何明文构建目录。
-15. 上传结束后删除生成的明文 target workspace。
+3. 通过 GitHub API 把 `source_ref` 解析为完整 `source_sha`，再按 SHA checkout
+   `loulin/gplus`，初始化 submodule，获取全部 Tag，并关闭 credential persistence。
+4. 检查 target 与当前 Windows/Node 架构匹配；当前 hosted runner 只启用 `win-x64`，
+   arm64/ia32 明确失败，不做交叉构建。
+5. 配置 npm、uv、Electron 和 Electron Builder 下载缓存，安装固定版本的 Node、Python、
+   uv 与 age。Gplus Bot Desktop 额外验证锁定的 Hermes Tag identity。
+6. 使用 frozen root lockfile 安装所选应用的 filtered dependencies；Gplus Bot Desktop
+   额外构建 `@gplus/bot-contracts`。
+7. 调用所选应用的 `release:prepare-handoff` adapter。adapter 根据 profile/target 选择
+   channel、公共路径、Release API 配置和应用构建方式，生成 unsigned build workspace、
+   filtered `node_modules`、Electron/Builder cache 和完整 handoff manifest。
+8. `scripts/package-windows-handoff.ps1` 校验 payload 文件清单与 SHA-256/SHA-512，
+   将 `payload/` 和完整 manifest 打成 ZIP，再用 profile 专属 age recipient 加密。
+9. 只上传 `encrypted-handoff.age` 与脱敏 `ciphertext-manifest.json`，保留 7 天；
+   Workflow summary 记录 source SHA、版本、build number 和 ciphertext SHA-256。
+10. `always()` 清理明文 handoff，并保存四类下载缓存。
 
 ### 3.2.1 缓存与加速边界
 
@@ -127,27 +128,17 @@ Workflow 在每次 hosted Windows job 开始时都是全新 runner，因此缓�
 前缀 cache 作为候选恢复值。第一次运行或缓存未命中时耗时不会降低，后续运行才会
 减少网络下载。
 
-pnpm store 不纳入公共 runner 缓存。顶层 monorepo 的 frozen lockfile 仍可能解析
-私有 `@imedpower` 包，缓存整个 store 会扩大私有依赖进入公共仓库缓存的风险。
-因此 filtered pnpm install 仍会在每次 job 中重新准备，只有生成 workspace 的
-npm 下载数据被复用；`node_modules`、源码、`win-unpacked`、安装包和 handoff
-也不缓存。
+pnpm store 不纳入公共 runner 缓存。filtered install 仍会在每次 job 中重新准备；
+`node_modules`、源码、`win-unpacked`、安装包和 handoff 也不进入 Actions cache。
 
-当前 workflow 的依赖准备使用：
+当前 Workflow 按应用选择 filtered install：
 
 ```text
 corepack pnpm install --filter 'gplus-bot-desktop...' --recursive \
   --frozen-lockfile --ignore-scripts --prefer-offline
 corepack pnpm --filter '@gplus/bot-contracts' run build
-```
-
-当前 unsigned package 的实际构建参数等价于：
-
-```text
-node apps/gplus-bot-desktop/scripts/run-desktop-release-target.mjs \
-  win-x64 --channel staging \
-  --base-url https://assets.imedpower.com/apps/gplus-bot-desktop \
-  --api-base-url https://gplus.staging.imedpower.com
+corepack pnpm install --filter 'libre-reader...' --recursive \
+  --frozen-lockfile --ignore-scripts --prefer-offline
 ```
 
 ### 3.3 已验证证据
@@ -177,9 +168,11 @@ node apps/gplus-bot-desktop/scripts/run-desktop-release-target.mjs \
 | [33419353095](https://github.com/loulin/gplus-runner/actions/runs/33419353095) | 第一层路径归一化后，确认 nested `extractFile()` 仍需 Windows 分隔符 |
 | [33460720703](https://github.com/loulin/gplus-runner/actions/runs/33460720703) | `win-x64` unsigned package 成功；当时尚未上传 handoff |
 
-成功 run 带有 GitHub 的 Node.js 20 deprecation annotation：当前 pinned action
-被 runner 强制使用 Node.js 24，未影响本次构建。后续维护应在升级 action 到
-Node.js 24 原生版本后重新跑一次 build，并复核 action SHA。
+历史成功 run 带有 GitHub 的 Node.js 20 deprecation annotation；该提示来自 Action
+自身的运行时，不是构建使用的 Node.js 版本。当前 workflow 已将 checkout、GitHub App
+token、setup-node、setup-python、setup-uv 和 upload-artifact 更新到 Node.js 24 原生版本，
+cache 保持现有的 Node.js 24 版本。合并后应重新跑一次 build，确认新 Action 与当前
+Windows handoff 流程兼容。
 
 manifest 中记录的构建文件及 SHA-256 是：
 
@@ -214,38 +207,36 @@ latest.yml
 日常验证使用 `develop`：
 
 ```bash
-gh workflow run build-staging.yml \
+gh workflow run build-windows-desktop.yml \
   --repo loulin/gplus-runner \
   --ref main \
+  -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 \
   -f source_ref=develop
 ```
 
 问题复现或候选版本使用完整 SHA：
 
 ```bash
-gh workflow run build-staging.yml \
+gh workflow run build-windows-desktop.yml \
   --repo loulin/gplus-runner \
   --ref main \
+  -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 \
   -f source_ref=<40-character-private-commit-sha>
 ```
 
 查询并下载脱敏 manifest 与加密 handoff：
 
 ```bash
-gh run list --repo loulin/gplus-runner --workflow build-staging.yml --limit 5
+gh run list --repo loulin/gplus-runner --workflow build-windows-desktop.yml --limit 5
 gh run watch <run-id> --repo loulin/gplus-runner --exit-status
 gh run download <run-id> --repo loulin/gplus-runner \
-  --name gplus-bot-desktop-staging-manifest-<run-id>
-gh run download <run-id> --repo loulin/gplus-runner \
-  --name gplus-bot-desktop-staging-handoff-<run-id>
+  --name gplus-bot-desktop-staging-win-x64-handoff-<run-id>
 ```
 
 本 Workflow 的构建输出发布到当前 Run 的 GitHub Actions Artifact，而不是
 Git Tag 或 GitHub Release：
 
-- `gplus-bot-desktop-staging-handoff-<run-id>`：age 加密 ZIP 和脱敏 ciphertext manifest，
-  供 Windows 签名机下载。
-- `gplus-bot-desktop-staging-manifest-<run-id>`：只含源码、版本、构建号和文件摘要的脱敏 manifest。
+- handoff artifact 只含 `encrypted-handoff.age` 和脱敏 `ciphertext-manifest.json`；完整 manifest 位于加密内容中。
 
 Artifact 目前保留 7 天，只是跨机器交接存储。Tag 不承担二进制存储职责；私有仓库的 annotated
 release tag 只在正式 `release:local` 发布和 `release:verify` closeout 中用于固定版本身份、
@@ -253,8 +244,8 @@ tag object、peeled commit 和 source ref。使用本 Workflow 从任意 branch/
 不需要为了保存产物创建 Tag；但该 branch 构建不能直接冒充已有 release tag 的正式 target。
 
 不要仅凭 runner 启动、checkout 成功或依赖安装成功判断构建完成；必须看到
-`Build unsigned Windows package`、`Write sanitized build manifest`、
-`Create encrypted Windows handoff` 和两个 upload steps 全部成功。
+`Prepare application handoff`、`Create encrypted handoff` 和
+`Upload encrypted handoff artifact` 全部成功。
 
 ### 4.2 失败定位
 
@@ -263,12 +254,10 @@ tag object、peeled commit 和 source ref。使用本 Workflow 从任意 branch/
 1. `Create read-only source token`：检查 App installation 和两个 runner Secret 名称。
 2. `Checkout private source at requested ref`：检查 branch/SHA 是否存在及 App 是否只读可见。
 3. `Fetch locked Hermes release tag`：检查 submodule remote 和锁定 tag 是否仍可访问。
-4. `Validate packaging Python layout`：检查 hosted runner 的 Python alias 变化。
-5. `Install filtered workspace dependencies`：检查锁文件、npm registry 和网络下载。
-6. `Run Desktop JavaScript contract smoke`：先修复契约或源码版本问题，再重跑。
-7. `Build unsigned Windows package`：读取完整失败日志，重点检查 Electron builder binary、
-   Hermes 离线依赖、路径长度、`app.asar` 和 NSIS。
-8. handoff/upload：确认公开 artifact 只包含 `.zip.age` 和 ciphertext manifest，并检查
+4. `Install filtered dependencies`：检查锁文件、npm registry 和网络下载。
+5. `Prepare application handoff`：读取完整失败日志，重点检查 Electron builder binary、
+   Hermes/bytecode 依赖、路径长度、`app.asar` 和 NSIS。
+6. handoff/upload：确认公开 artifact 只包含 `encrypted-handoff.age` 和 ciphertext manifest，并检查
    allow-list、ciphertext header、SHA-256 和 artifact retention。
 
 ## 5. 加密 artifact 交接设计
@@ -290,26 +279,19 @@ staging、production 必须使用不同 keypair。私钥轮换时停用旧 recip
 
 ### 5.2 加密包内容
 
-加密包只允许包含当前 target 的最小交接材料。当前 payload 结构为：
+加密包只允许包含当前 app/target 的构建上下文。应用 adapter 负责生成并记录
+完整 `handoff-manifest.json`，公共 runner 只把该目录封装后加密。当前 payload
+结构按应用分别为：
 
 ```text
-payload/
-  handoff-manifest.json
-  build/staging-build-manifest.json
-  builder/package.json
-  builder/scripts/notarize.cjs
-  builder/scripts/notarize-artifact.cjs
-  builder/scripts/notarize-artifact-hook.cjs
-  builder/scripts/sign-win-retry.cjs
-  prepackaged/win-unpacked/
-  reference/latest.yml
-  reference/*.blockmap
+gplus-bot-desktop: payload/generated/ (generated Electron workspace, including win-unpacked)
+libre-reader:     payload/workspace/ (apps/libre-reader plus repository-root scripts/lib)
 ```
 
-具体目录和格式必须由实现脚本固定 allow-list，不能直接把整个 checkout、
-`.git`、`node_modules` 或未知文件打包。若当前 Electron Builder 需要完整生成
-workspace 才能在本地完成签名，必须先评估 artifact 体积和临时磁盘空间；超出限制时
-应交接最小 `win-unpacked` 和可重现的构建元数据，而不是退回明文上传。
+prepare adapter 不复制 checkout 的 `.git` 或其他应用目录；handoff packager
+会拒绝 reparse point，并只复制 `payload/` 与 `handoff-manifest.json`。当前优先保证
+可用性，payload 可能包含较大的 filtered `node_modules`；超出 artifact/磁盘限制时
+再按应用 adapter 缩减，而不是退回明文上传。
 
 加密前必须生成并校验：
 
@@ -333,16 +315,13 @@ ciphertext: size, sha256
 签完后直接复用原来的 `latest.yml`、blockmap 或 Release receipt，因为签名会改变
 文件 bytes，可能使 blockmap、SHA-512、size 和 update verification 失效。
 
-因此后续实现必须二选一并用真实 Windows 验证证明：
-
-1. **推荐**：hosted runner 交接经过校验的 `win-unpacked`/prepackaged build context，
-   本地 Windows 用同一版本的 Electron Builder 重新执行签名打包，并重新生成
-   blockmap、`latest.yml`、receipt；或
-2. 实现一个明确的 post-package signing adapter，签署所有要求的嵌套 PE 文件，
-   重新生成所有受 bytes 影响的 metadata，再运行现有 receipt/publish 校验。
-
-在上述 adapter 和回归测试完成前，禁止把“下载 unsigned installer 后调用 signtool”
-当作可发布流程。
+当前 adapter 交接经过校验的完整构建 workspace，包含 `win-unpacked`、filtered
+dependencies 和 Electron/Builder cache。本地 Windows 使用同一版本的 Electron Builder
+离线重跑最终 packaging/signing：先执行一次不带 `--prepackaged` 的完整 ZIP 构建，让
+app-builder-lib 对应用和嵌套 PE 签名；再把同一个已签 `win-unpacked` 作为 `--prepackaged`
+输入生成 NSIS。不能把 `--prepackaged` 作为唯一打包步骤，因为该模式会跳过应用签名。
+最终流程重新生成 blockmap、`latest.yml` 和 receipt，也禁止把“下载 unsigned installer
+后调用 signtool”当作可发布流程。
 
 ### 5.4 hosted workflow 步骤
 
@@ -361,7 +340,7 @@ ciphertext: size, sha256
 
 ```text
 GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING
-GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_PROD
+GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_PRODUCTION
 ```
 
 正式执行 staging 前必须配置 `GPLUS_DESKTOP_ARTIFACT_AGE_RECIPIENT_STAGING`。
@@ -382,6 +361,8 @@ GitHub。Production recipient 应使用 GitHub Environment 的受保护配置，
 - Certum SimplySign Desktop 已登录，代码签名证书出现在当前用户证书库。
 - 通过 `WIN_CSC_SUBJECT_NAME` 固定 signer subject；不能在脚本中猜测证书。
 - `signtool.exe`、Node、pnpm、`qshell` 和仓库发布脚本。
+- Git Bash (`bash.exe`) 在 `PATH` 中；Gplus Desktop 的现有发布器通过 Bash
+  调用 Qiniu/Release 发布脚本。
 - 仅通过 credentials helper 注入的 `desktop-release/<environment>/gplus-bot-desktop`
   identity；不在仓库保存 `secrets.env`、PFX 或 token。
 
@@ -397,31 +378,63 @@ RELEASE_TOKEN
 
 本文不记录这些值。
 
-### 6.2 待实现的本地命令边界
+### 6.2 当前本地命令边界
 
-应增加一个私有仓库脚本或受控 Windows wrapper，接受：
+签名机先校验公开 manifest 的 ciphertext SHA-256，再用本地 age 私钥解密并解包。
+解包目录必须包含 `handoff-manifest.json` 和对应 `payload/`，然后从同一私有仓库
+checkout 执行应用 adapter：
 
-```text
-encrypted_handoff
-environment: staging | prod
-expected sourceSha / target / version / buildNumber
+```powershell
+age.exe -d -i "$env:USERPROFILE\.gplus\gplus-desktop-staging-age-key.txt" `
+  -o "$env:TEMP\gplus-handoff.zip" .\encrypted-handoff.age
+Expand-Archive -LiteralPath "$env:TEMP\gplus-handoff.zip" `
+  -DestinationPath "$env:TEMP\gplus-handoff" -Force
+corepack pnpm --filter gplus-bot-desktop run release:finalize-handoff -- `
+  --handoff "$env:TEMP\gplus-handoff" --profile staging --target win-x64 `
+  --expected-source-sha <full-source-sha> --publish
 ```
 
-它必须按以下顺序执行：
+将 filter、profile 和 target 替换为本次唯一构建组合；Libre Reader 使用
+`--filter libre-reader`。带 `--publish` 的 handoff 必须来自应用 canonical annotated
+release Tag 的 peeled commit；普通分支/SHA handoff 应去掉 `--publish`，只做签名验证。
+finalize 会校验 source/run identity、payload 摘要、版本、
+构建号和 channel，在临时副本中重新执行 Electron Builder 签名打包，验证 installer
+及 ZIP 内主程序的 Authenticode，然后复用现有发布器完成七牛 immutable object、公开 URL
+回读、Release API upsert/latest 回读、target manifest 和 receipt。`--unsigned` 只能显式
+用于诊断，receipt 会写入 `packageMode: unsigned` 且禁止 `--publish`；签名失败不会自动
+切换到 unsigned。失败时临时 finalize workspace 会清理，handoff payload 不会被改写；
+成功时只在 handoff 根目录保存 receipt 和发布结果。使用完全相同的 app/profile/target、
+source SHA、签名模式和 publish 模式重跑时直接复用成功 receipt，不再次签名生成不同字节。
 
-1. 下载 ciphertext，并在解密前校验 ciphertext SHA-256 和 expected run identity。
-2. 解密到一次性目录，拒绝路径穿越、未知文件和不匹配的 source/target/version/build。
-3. 使用同一 pinned Electron Builder 版本执行签名打包或 post-package signing adapter。
-4. 对 installer、nested executables 和 update code signature 执行 Authenticode 校验，
-   状态必须为 `Valid`，签名 subject 必须等于 `WIN_CSC_SUBJECT_NAME`。
-5. 在最终 bytes 上重新计算 size、SHA-256、SHA-512、blockmap 和 `latest.yml`，生成
-   canonical release receipt。
-6. 先做 Qiniu immutable object inspect；同 key 同 bytes 才允许 reuse，不同 bytes 直接失败。
-7. 上传并从公开 URL 校验 immutable objects 的 size/hash/ETag；不能只看 qshell 返回码。
-8. 调用 Release API software `6` 的 upsert，`code` 使用 receipt 的 `buildNumber`，
-   然后回读 latest 并校验 version、URL、hash、size。
-9. 最后才覆盖 target manifest、刷新 CDN，并再次回读 manifest bytes。
-10. 成功或失败都清理解密目录、临时 qshell 配置和临时 token 文件。
+不要绕过应用 adapter 直接调用 `publish-gplus-desktop-updates.sh`。handoff 已包含对应
+channel 的公开七牛配置，`release:finalize-handoff` 会从 handoff workspace 加载 bucket、
+domain 和 prefix；Access Key、Secret Key 与 Release token 仍由签名机 credentials helper
+注入。直接调用底层 publisher 时，这些公开配置不会自动补齐。
+
+### 6.3 七牛续传、Tag 与版本排查
+
+Gplus Bot Desktop 的七牛分片上传默认使用 4 个 worker。网络仍不稳定时，可以在执行
+finalize 前人工降低并发；取值仍允许 1 到 32：
+
+```powershell
+$env:GPLUS_DESKTOP_QINIU_UPLOAD_WORKERS = '2'
+```
+
+上传中断后保留解密后的 handoff 目录，不要删除 `publish-work/qshell-workspace`。在凭据和
+网络恢复后使用完全相同的 finalize 命令重跑；已生成的 signed release 会从
+`finalized/signed/release` 复用，qshell 则继续使用原 resumable workspace。publisher 会先
+检查公开对象的 size、SHA-512 和七牛 ETag：相同 bytes 记为 `reuse`，同 key 不同 bytes
+直接失败，mutable target manifest 仍只在 immutable objects 和 Release API 校验完成后更新。
+
+canonical annotated Tag 必须在 hosted prepare 之前已经指向本次 source SHA。Tag 缺失或
+peeled commit 不匹配时，普通 staging handoff 仍可用于不带 `--publish` 的签名验证，但不能
+发布；production prepare 会直接失败。Tag 修复属于人工审核操作，release 脚本不会自动移动
+或强推 Tag。修复后必须重新运行 hosted prepare，使新 handoff 记录新的 tag object 和 peeled
+commit，不能继续发布旧 handoff。
+
+handoff manifest 中的 Electron 和 Electron Builder 版本来自 prepare workspace 实际解析到的
+package，而不是版本范围声明；finalize 使用 handoff 内同一份 `node_modules` 和工具缓存，不使用
+签名机全局安装的 Electron Builder。排查版本差异时以完整 handoff manifest 和 payload 为准。
 
 当前私有仓库已有的发布入口可作为实现基础：
 
@@ -458,7 +471,8 @@ Qiniu bucket: assets-development
 
 ### 7.2 Production
 
-Production 必须是独立 workflow 或独立 job，不能通过修改 staging input 偷换环境：
+Production 使用同一个统一 workflow 的 `profile=production` 输入，不能通过修改 staging
+参数偷换环境；应用 adapter 仍会执行稳定版本和 release identity 门禁：
 
 - 默认源码分支为 `master`，但正式执行必须固定完整 SHA 或不可移动的 annotated release tag。
 - 只接受稳定 SemVer，不接受 `rc`、`beta` 或其他 prerelease。
@@ -466,8 +480,9 @@ Production 必须是独立 workflow 或独立 job，不能通过修改 staging i
 - hosted Windows 只生成加密 handoff，不保存 SimplySign 私钥，不调用 Qiniu 或 Release API。
 - 本地 Windows 完成 SimplySign Authenticode、最终 metadata、生产七牛和 Production
   Release API 登记。
-- 只有五个 target 的公开对象、manifest、Release API latest 和安装替换全部 closeout
-  后，才记为完整 Production release。
+- 只有三个 Windows target（`win-x64`、`win-arm64`、`win-ia32`）的公开对象、manifest、
+  Release API latest 和安装替换全部 closeout 后，才记为本轮完整 Production release；
+  macOS、Android、iOS 不属于本轮验收范围。
 
 Production 公共配置：
 
@@ -485,10 +500,10 @@ Production 禁止事项：
 - 跳过 Authenticode、公开对象 readback、Release API latest readback 或 target closeout。
 - 把生产 token、SimplySign session、PFX、age private key 写到 public runner。
 
-## 8. 后续任务清单
+## 8. 剩余验收清单
 
-以下清单是后续实现的停止点和验收标准。未完成项不能在 README 或 run summary 中
-描述为已发布能力。
+以下清单区分已实现的代码路径和仍需在真实 Windows/外部服务完成的验收项。
+未完成的现场验收不能在 README 或 run summary 中描述为已发布能力。
 
 ### P0：保持当前构建可重复
 
@@ -514,11 +529,11 @@ Production 禁止事项：
 
 ### P2：实现本地 Windows signed packaging wrapper
 
-- [ ] 在 Windows 上验证 `win-unpacked/prepackaged` 重打包方案，并确定 nested PE 的签名顺序。
-- [ ] 固定 Electron Builder 版本，重建最终 blockmap、`latest.yml` 和 receipt。
-- [ ] 集成 SimplySign subject preflight 和 `signtool` 重试脚本。
+- [x] 在 adapter 中实现基于完整 handoff workspace 的离线重打包入口，并固定 Electron Builder 版本。
+- [x] 在最终签名打包中重建 blockmap、`latest.yml` 和 receipt。
+- [x] 集成 SimplySign subject preflight、签名重试脚本和 Authenticode 校验。
 - [ ] 验证 installer 与所有 nested PE 的 Authenticode subject/status。
-- [ ] 解密目录、qshell 配置和临时凭据实现 finally 清理。
+- [x] finalize 使用临时工作区并在 finally 清理；发布器继续清理临时 qshell 配置。
 
 验收：签名机断网或受限网络时仍能从 ciphertext 完成签名；最终 bytes 的 metadata
 和 receipt 一致；签名状态为 `Valid`；没有 unsigned artifact 被发布。
@@ -533,11 +548,11 @@ Production 禁止事项：
 验收：中途失败不会覆盖 target manifest；重试同一 tag/target 只 reuse 相同 bytes；公开
 feed、Release API、receipt 和本地最终文件的 version/hash/size 一致。
 
-### P4：增加 Production handoff workflow
+### P4：启用统一 workflow 的 Production handoff
 
-- [ ] 新增独立的 production workflow，channel 固定 `prod`，默认源分支 `master`。
+- [x] 统一 workflow 接受 `profile=production`，channel 固定 `prod`，默认源分支 `master`。
 - [ ] 要求稳定版本、完整 SHA/不可移动 annotated tag 和 Production Environment approval。
-- [ ] 绑定 production age recipient，禁止 staging recipient 和 staging URL 混用。
+- [x] 绑定独立的 production age recipient，禁止 staging recipient 和 staging URL 混用。
 - [ ] 保持 hosted runner 不接触 Qiniu、Release API token 和 SimplySign private material。
 
 验收：`develop`、prerelease、staging recipient 或 staging feed 不能通过 workflow 参数
@@ -545,12 +560,12 @@ feed、Release API、receipt 和本地最终文件的 version/hash/size 一致�
 
 ### P5：完整 Production closeout
 
-- [ ] 按 target 矩阵完成 `win-x64`、`win-arm64`、`win-ia32`，并与 macOS target 协调。
+- [ ] 按 target 矩阵完成 `win-x64`、`win-arm64`、`win-ia32`；本轮不纳入 macOS target。
 - [ ] 对每个 target 验证 Authenticode、公开 immutable objects、manifest 和 Release API。
 - [ ] 执行私有仓库 `release:verify -- --tag <tag>`，记录全部 target 结果。
 - [ ] 在匹配硬件上完成稳定版本 N-to-N+1 更新替换。
 
-验收：五个 target 全部 `published`、build number/API code 一致、source provenance 一致，
+验收：三个 Windows target 全部 `published`、build number/API code 一致、source provenance 一致，
 且没有仅凭 hosted build 成功就关闭发布的情况。
 
 ## 9. 安全与停止条件
