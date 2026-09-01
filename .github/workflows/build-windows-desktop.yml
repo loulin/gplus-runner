@@ -37,7 +37,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: windows-desktop-${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.source_ref }}
+  group: windows-desktop-${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.handoff_encryption }}-${{ inputs.source_ref }}
   cancel-in-progress: false
 
 jobs:
