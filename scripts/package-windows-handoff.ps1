@@ -4,7 +4,6 @@ param(
   [string] $HandoffDirectory,
   [Parameter(Mandatory = $true)]
   [string] $OutputDirectory,
-  [Parameter(Mandatory = $true)]
   [string] $AgePath,
   [string] $Recipient,
   [string] $AgeVersion,
