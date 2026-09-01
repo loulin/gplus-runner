@@ -100,15 +100,18 @@ public runner workflow 的分支，不是应用源码分支。
 4. 检查 target 与当前 Windows/Node 架构匹配；当前 hosted runner 只启用 `win-x64`，
    arm64/ia32 明确失败，不做交叉构建。
 5. 配置 npm、uv、Electron 和 Electron Builder 下载缓存，安装固定版本的 Node、Python、
-   uv 与 age。Gplus Bot Desktop 额外验证锁定的 Hermes Tag identity。
+   uv；age 模式再安装固定版本的 age。Gplus Bot Desktop 额外验证锁定的 Hermes Tag identity。
 6. 使用 frozen root lockfile 安装所选应用的 filtered dependencies；Gplus Bot Desktop
    额外构建 `@gplus/bot-contracts`。
 7. 调用所选应用的 `release:prepare-handoff` adapter。adapter 根据 profile/target 选择
    channel、公共路径、Release API 配置和应用构建方式，生成 unsigned build workspace、
    filtered `node_modules`、Electron/Builder cache 和完整 handoff manifest。
 8. `scripts/package-windows-handoff.ps1` 校验 payload 文件清单与 SHA-256/SHA-512，
-   将 `payload/` 和完整 manifest 打成 ZIP，再用 profile 专属 age recipient 加密。
-9. 只上传 `encrypted-handoff.age` 与脱敏 `ciphertext-manifest.json`，保留 7 天；
+   将 `payload/` 和完整 manifest 打成 ZIP，再按 `handoff_encryption` 选择用 profile 专属
+   age recipient 加密，或保留为 `handoff.zip`。
+9. 默认只上传 `encrypted-handoff.age` 与脱敏 `ciphertext-manifest.json`，保留 7 天；
+   显式选择 `handoff_encryption=none` 时上传同一 ZIP 的明文 `handoff.zip` 与带摘要的
+   `ciphertext-manifest.json`，保留 GitHub 允许的最短 1 天；
    Workflow summary 记录 source SHA、版本、build number 和 ciphertext SHA-256。
 10. `always()` 清理明文 handoff，并保存四类下载缓存。
 
@@ -264,14 +267,18 @@ tag object、peeled commit 和 source ref。使用本 Workflow 从任意 branch/
 
 ### 5.1 当前方案
 
-采用 `age` 公钥加密：
+默认采用 `age` 公钥加密。为处理 age 在超大 handoff 上耗时过长的情况，Workflow
+也提供显式的 `handoff_encryption=none` 旁路：
 
 - Windows 签名机生成一次 staging 和一次 production 的 age keypair。
 - 私钥只保存在签名机受 ACL 保护的本地目录，Never upload。
 - runner 只配置对应的 age recipient 公钥（Actions variable，不是 Secret）。
-- hosted workflow 将允许列表中的构建上下文加密后才上传 GitHub artifact；实现位于
+- hosted workflow 默认将允许列表中的构建上下文加密后才上传 GitHub artifact；实现位于
   `scripts/package-windows-handoff.ps1`。
-- 签名机下载 ciphertext，解密到临时目录，验证 manifest 后再进入签名流程。
+- `none` 模式仍执行相同的 allow-list、reparse point、payload 文件清单和 SHA-256/SHA-512
+  校验，只跳过 age 加密并上传 `handoff.zip`。GitHub Artifact 最短保留期是 1 天，不能配置
+  3 小时；签名机下载并验证摘要后，应立即用 `scripts/download-windows-handoff.ps1` 删除远端 artifact。
+- 签名机下载 handoff，按模式解密或直接解包到临时目录，验证 manifest 后再进入签名流程。
 
 公钥泄露不会解密 artifact；私钥泄露则会暴露该环境的历史和未来交接包，因此
 staging、production 必须使用不同 keypair。私钥轮换时停用旧 recipient，保留已完成
@@ -341,10 +348,10 @@ app-builder-lib 对应用和嵌套 PE 签名；再把同一个已签 `win-unpack
 
 1. 固定并记录 `sourceSha`、Hermes SHA、channel、target、version、build number。
 2. 只复制 allow-list 文件到临时 handoff 目录。
-3. 用 environment 对应的 age recipient 加密整个 handoff 包。
-4. 在 runner 上检查 ciphertext magic/header、非空、大小上限和 SHA-256。
-5. 上传 `*.age` ciphertext 与脱敏 ciphertext manifest；不上传 plaintext。
-6. 设置短 retention（当前为 7 天），并在 run summary 显示下载入口、摘要和过期时间。
+3. age 模式用 environment 对应的 age recipient 加密整个 handoff 包；none 模式保留 ZIP。
+4. 在 runner 上检查对应文件的 magic/header（age）、非空、大小上限和 SHA-256。
+5. age 模式上传 `*.age` ciphertext；none 模式上传 `handoff.zip`；两者都只附带脱敏 manifest。
+6. 设置短 retention（age 为 7 天，none 为 GitHub 最短 1 天），并在 run summary 显示下载入口、摘要和过期时间。
 7. job 结束时删除明文 handoff 目录；GitHub runner 是临时环境，但清理仍作为显式步骤保留。
 
 当前变量名：
@@ -391,8 +398,8 @@ RELEASE_TOKEN
 
 ### 6.2 当前本地命令边界
 
-签名机先校验公开 manifest 的 ciphertext SHA-256，再用与 handoff `profile` 对应的
-本地 age 私钥解密并解包。解密 key 路径固定为上节列出的 profile 路径。
+签名机先校验公开 manifest 中 payload 的 SHA-256，再按 handoff 模式处理：age 使用与
+handoff `profile` 对应的本地 age 私钥解密，none 直接解包 `handoff.zip`。解密 key 路径固定为上节列出的 profile 路径。
 解包目录必须包含 `handoff-manifest.json` 和对应 `payload/`，然后从同一私有仓库
 checkout 执行应用 adapter：
 
@@ -525,22 +532,24 @@ Production 禁止事项：
 - [x] 保留 `source_ref` 分支/SHA 输入，默认 `develop`。
 - [x] 保留 App 只读权限和 `persist-credentials: false`。
 - [x] 保留 Windows x64、Hermes lock、filtered install、contract smoke 和 package preflight。
-- [x] 只上传 sanitized manifest 和 age ciphertext，不上传明文 installer。
+- [x] age 模式只上传 sanitized manifest 和 ciphertext；none 模式仅作为显式的短期明文 ZIP 旁路。
 - [x] 对 run、source SHA、version/build、target 和 artifact 保存可追溯证据。
 
-验收：重复触发同一 SHA，workflow 成功，manifest source SHA 与输入一致，公开 artifact
-中不存在源码、`source/`、`.git/` 或明文 EXE/ZIP。
+验收：重复触发同一 SHA，workflow 成功，manifest source SHA 与输入一致；age 模式公开
+artifact 中不存在源码、`source/`、`.git/` 或明文 EXE/ZIP。none 模式的明文 ZIP 必须在
+Windows 下载并完成摘要校验后立即删除远端 artifact。
 
-### P1：完成 age 加密 handoff
+### P1：完成 age/短期明文 handoff
 
 - [ ] 生成并保存 staging/prod 独立 age keypair；只把 recipient 配到对应 environment。
 - [x] 增加 allow-list handoff packager 和 ciphertext manifest。
 - [x] 加入 ciphertext header、大小上限、SHA-256 和明文清理检查。
-- [x] 将 plaintext artifact 上传步骤保持禁用。
+- [x] 默认保持 plaintext artifact 上传禁用；`handoff_encryption=none` 是显式例外。
 - [ ] 在 Windows 签名机生成并配置 staging recipient，完成真实解密验收。
 
-验收：公开 Actions 页面只能下载 `*.age` 和脱敏 manifest；没有 age private key 时无法
-解密；签名机解密后能复核 source SHA、target、version、build number 和所有文件摘要。
+验收：age 模式下公开 Actions 页面只能下载 `*.age` 和脱敏 manifest；none 模式允许下载明文
+ZIP，但必须在 Windows 下载并完成摘要校验后立即删除远端 artifact；签名机能复核 source SHA、
+target、version、build number 和所有文件摘要。
 
 ### P2：实现本地 Windows signed packaging wrapper
 

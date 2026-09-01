@@ -6,10 +6,10 @@ param(
   [string] $OutputDirectory,
   [Parameter(Mandatory = $true)]
   [string] $AgePath,
-  [Parameter(Mandatory = $true)]
   [string] $Recipient,
-  [Parameter(Mandatory = $true)]
-  [string] $AgeVersion
+  [string] $AgeVersion,
+  [ValidateSet('age', 'none')]
+  [string] $Mode = 'age'
 )
 
 Set-StrictMode -Version Latest
@@ -289,10 +289,12 @@ $resolvedHandoffDirectory = Resolve-FullPath $HandoffDirectory
   if (-not (Test-Path -LiteralPath $manifestPayloadRoot -PathType Container)) { throw "Handoff manifest payloadRoot is missing: $manifestPayloadRoot" }
   Assert-HandoffPayloadManifest -Root $manifestPayloadRoot -Manifest $handoffManifest
   Assert-NoReparseTree -Root $payloadRoot -Label 'handoff payload'
-  if (-not (Test-Path -LiteralPath $AgePath -PathType Leaf)) { throw "Age executable is missing: $AgePath" }
-  Assert-SafeText -Value $AgeVersion -Label 'Age version'
-  Assert-SafeText -Value $Recipient -Label 'Age recipient'
-  if ($AgeVersion -notmatch '^\d+\.\d+\.\d+$' -or $Recipient -notmatch '^age1[a-z0-9]+$') { throw 'Age version or recipient is invalid' }
+  if ($Mode -eq 'age') {
+    if (-not (Test-Path -LiteralPath $AgePath -PathType Leaf)) { throw "Age executable is missing: $AgePath" }
+    Assert-SafeText -Value $AgeVersion -Label 'Age version'
+    Assert-SafeText -Value $Recipient -Label 'Age recipient'
+    if ($AgeVersion -notmatch '^\d+\.\d+\.\d+$' -or $Recipient -notmatch '^age1[a-z0-9]+$') { throw 'Age version or recipient is invalid' }
+  }
 
   $temporaryRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("gplus-windows-handoff-" + [guid]::NewGuid().ToString('N'))
   try {
@@ -312,32 +314,40 @@ $resolvedHandoffDirectory = Resolve-FullPath $HandoffDirectory
     } else {
       New-Item -ItemType Directory -Path $resolvedOutputDirectory -Force | Out-Null
     }
-    $ciphertextPath = Join-Path $resolvedOutputDirectory 'encrypted-handoff.age'
-    & $AgePath '-r' $Recipient '-o' $ciphertextPath $archivePath | Out-Host
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $ciphertextPath -PathType Leaf)) { throw 'age failed to encrypt handoff' }
-    $header = Get-AgeHeader $ciphertextPath
-    if (-not $header.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) { throw 'Encrypted handoff does not have an age v1 header' }
-    $ciphertextItem = Get-Item -LiteralPath $ciphertextPath -Force
+    $archiveName = if ($Mode -eq 'age') { 'encrypted-handoff.age' } else { 'handoff.zip' }
+    $archiveOutputPath = Join-Path $resolvedOutputDirectory $archiveName
+    if ($Mode -eq 'age') {
+      & $AgePath '-r' $Recipient '-o' $archiveOutputPath $archivePath | Out-Host
+      if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $archiveOutputPath -PathType Leaf)) { throw 'age failed to encrypt handoff' }
+      $header = Get-AgeHeader $archiveOutputPath
+      if (-not $header.StartsWith('age-encryption.org/v1', [System.StringComparison]::Ordinal)) { throw 'Encrypted handoff does not have an age v1 header' }
+    } else {
+      Copy-Item -LiteralPath $archivePath -Destination $archiveOutputPath -Force
+    }
+    $ciphertextItem = Get-Item -LiteralPath $archiveOutputPath -Force
     # GitHub Actions artifacts support multi-gigabyte payloads.  The generated
     # Hermes workspace can legitimately exceed 2 GiB until the runtime-only
     # source filter is applied; keep this ceiling high enough for the current
     # production handoff while still rejecting unbounded output.
     if ($ciphertextItem.Length -le 0 -or $ciphertextItem.Length -gt [int64] 8GB) { throw "Ciphertext handoff size is outside the allowed range: $($ciphertextItem.Length) bytes" }
     $public = $publicManifest
-    $public | Add-Member -NotePropertyName ciphertext -NotePropertyValue ([ordered]@{
-      name = 'encrypted-handoff.age'; size = [int64]$ciphertextItem.Length;
-      sha256 = (Get-FileHash -LiteralPath $ciphertextPath -Algorithm SHA256).Hash.ToLowerInvariant();
-      sha512 = Get-Sha512Base64 -Path $ciphertextPath; format = 'age-encrypted-zip'
-    }) -Force
-    $public | Add-Member -NotePropertyName ageVersion -NotePropertyValue $AgeVersion -Force
+    $format = if ($Mode -eq 'age') { 'age-encrypted-zip' } else { 'zip' }
+    $digestRecord = [ordered]@{
+      name = $archiveName; size = [int64]$ciphertextItem.Length;
+      sha256 = (Get-FileHash -LiteralPath $archiveOutputPath -Algorithm SHA256).Hash.ToLowerInvariant();
+      sha512 = Get-Sha512Base64 -Path $archiveOutputPath; format = $format
+    }
+    $public | Add-Member -NotePropertyName handoffEncryption -NotePropertyValue $Mode -Force
+    if ($Mode -eq 'age') { $public | Add-Member -NotePropertyName ciphertext -NotePropertyValue $digestRecord -Force; $public | Add-Member -NotePropertyName ageVersion -NotePropertyValue $AgeVersion -Force }
+    else { $public | Add-Member -NotePropertyName archive -NotePropertyValue $digestRecord -Force }
     $publicPath = Join-Path $resolvedOutputDirectory 'ciphertext-manifest.json'
     Write-Utf8NoBom -Path $publicPath -Content (($public | ConvertTo-Json -Depth 20) + "`n")
     $outputItems = @(Get-ChildItem -LiteralPath $resolvedOutputDirectory -Force)
     $unexpectedItems = @($outputItems | Where-Object {
-        $_.PSIsContainer -or $_.Name -notin @('encrypted-handoff.age', 'ciphertext-manifest.json')
+        $_.PSIsContainer -or $_.Name -notin @($archiveName, 'ciphertext-manifest.json')
       })
     if ($outputItems.Count -ne 2 -or $unexpectedItems.Count -ne 0) {
-      throw 'Handoff output must contain only encrypted-handoff.age and ciphertext-manifest.json'
+      throw "Handoff output must contain only $archiveName and ciphertext-manifest.json"
     }
     Write-Output ($public | ConvertTo-Json -Depth 20)
   } finally {

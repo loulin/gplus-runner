@@ -22,8 +22,8 @@ the application source remains private.
 - The job restores isolated npm, Electron, Electron Builder, and uv caches;
   the pnpm store and all source/generated/build directories remain uncached.
 - The validated `win-unpacked` handoff is allow-list packaged and encrypted with
-  `age` before upload. Public artifacts contain only ciphertext and sanitized
-  manifests; they do not contain source code or plaintext EXE/ZIP.
+  `age` before upload by default. An explicit `handoff_encryption=none` choice
+  uploads the same ZIP as plaintext with GitHub's minimum one-day retention.
 
 The complete process and the remaining implementation work are in
 [`docs/windows-desktop-release-plan.md`](docs/windows-desktop-release-plan.md).
@@ -128,7 +128,7 @@ For a reproducible run, replace `develop` with the full private commit SHA.
 The `--ref main` value selects the workflow revision in this public repository;
 `source_ref` selects the private application revision.
 
-Inspect the result and download both the public manifest and encrypted handoff:
+Inspect the result and download the handoff artifact:
 
 ```bash
 gh run list --repo loulin/gplus-runner --workflow build-windows-desktop.yml --limit 1
@@ -139,17 +139,36 @@ gh run download <run-id> --repo loulin/gplus-runner \
 
 The build output is persisted in the GitHub Actions run, not in Git. The
 handoff artifact is short-lived transport storage for the Windows signing
-machine and contains an age-encrypted ZIP plus a sanitized ciphertext
-manifest. Do not create a Git tag merely to store these bytes. A private
+machine. The default `age` mode contains an encrypted ZIP plus a sanitized
+manifest and is retained for 7 days. Pass `-f handoff_encryption=none` only
+when encryption is too slow; this uploads the same ZIP as plaintext and GitHub
+retains it for the minimum one day. Do not create a Git tag merely to store these bytes. A private
 repository annotated release tag is required only when running the formal
 `release:local` publish/closeout flow; this runner workflow can build an
 arbitrary branch or commit for staging validation.
 
+For a plaintext handoff, download and delete it after the SHA-256 check. Use a
+token with Actions artifact read and delete permission, kept only on the
+Windows signing machine:
+
+```powershell
+& .\scripts\download-windows-handoff.ps1 `
+  -RunId <run-id> `
+  -ArtifactName gplus-bot-desktop-production-win-x64-handoff-<run-id> `
+  -OutputDirectory $env:TEMP\gplus-handoff-download `
+  -Repository loulin/gplus-runner `
+  -GithubToken $env:GH_RELEASE_ARTIFACT_TOKEN
+```
+
+The script verifies `ciphertext-manifest.json` (the historical manifest name
+is retained for compatibility) before deleting the remote artifact.
+
 ## Finalize on Windows
 
-The signing machine downloads the artifact, verifies the public manifest's
-ciphertext SHA-256, and decrypts it with the local age private key for the
-selected profile. Extract the ZIP to a temporary directory, then run the
+The signing machine downloads the artifact and verifies the manifest's
+payload SHA-256. For age mode, decrypt it with the local age private key for
+the selected profile. For none mode, the downloaded `handoff.zip` is already
+the archive to extract. Extract the ZIP to a temporary directory, then run the
 matching private-repository adapter from a checkout that contains the same
 release scripts:
 
@@ -182,9 +201,8 @@ signing, but it cannot be published as a formal release.
 ## Security rule
 
 The private checkout is temporary runner state. The workflow uses a short-lived
-GitHub App token, disables checkout credential persistence, and uploads only a
-sanitized manifest plus an age-encrypted handoff. Do not change the workflow to
-upload `source/`, the generated workspace, an unencrypted installer, or a
-private key. Actions artifacts are short-lived transport storage; after
-download, keep the ciphertext on the signing machine and complete signing and
-Qiniu publication there.
+GitHub App token and disables checkout credential persistence. Age mode uploads
+only a sanitized manifest plus encrypted handoff. None mode is an explicit
+plaintext exception for a short-lived transport artifact; download and delete
+it immediately, and never upload `source/`, a private key, or a standalone
+installer.
