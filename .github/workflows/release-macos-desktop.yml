@@ -88,7 +88,7 @@ jobs:
           set -euo pipefail
           : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
           export GIT_TERMINAL_PROMPT=0
-          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\\n')"
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           git submodule sync --recursive
           for attempt in 1 2 3 4 5; do
             if GIT_CONFIG_GLOBAL=/dev/null git \
