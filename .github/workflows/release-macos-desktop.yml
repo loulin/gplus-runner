@@ -1,0 +1,363 @@
+name: macOS Desktop Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        description: Application to publish
+        required: true
+        default: gplus-bot-desktop
+        type: choice
+        options: [gplus-bot-desktop, libre-reader]
+      profile:
+        description: Release profile
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      tag:
+        description: Canonical annotated release tag in loulin/gplus
+        required: true
+        type: string
+      target:
+        description: One macOS target
+        required: true
+        default: mac-arm64
+        type: choice
+        options: [mac-arm64, mac-x64]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-desktop-${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish macOS Desktop release
+    runs-on: ${{ inputs.target == 'mac-arm64' && 'macos-15' || 'macos-15-intel' }}
+    environment: ${{ inputs.profile }}
+    timeout-minutes: 360
+    env:
+      CI: 'true'
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      APPLICATION: ${{ inputs.application }}
+      PROFILE: ${{ inputs.profile }}
+      TAG: ${{ inputs.tag }}
+      TARGET: ${{ inputs.target }}
+    steps:
+      - name: Checkout runner repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Create read-only source token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          app-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
+          private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
+          owner: loulin
+          repositories: gplus
+          permission-contents: read
+
+      - name: Checkout private source at release tag
+        id: source-checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: loulin/gplus
+          ref: ${{ inputs.tag }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          fetch-depth: 0
+          submodules: recursive
+          # release:local performs authenticated ls-remote calls while it
+          # revalidates the annotated release identity.
+          persist-credentials: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: '24'
+          architecture: ${{ inputs.target == 'mac-arm64' && 'arm64' || 'x64' }}
+
+      - name: Setup packaging Python
+        if: inputs.application == 'gplus-bot-desktop'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          architecture: ${{ inputs.target == 'mac-arm64' && 'arm64' || 'x64' }}
+
+      - name: Setup uv
+        if: inputs.application == 'gplus-bot-desktop'
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: false
+
+      - name: Setup Fastlane Ruby
+        if: inputs.application == 'gplus-bot-desktop'
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '4.0'
+          bundler: '2.7.2'
+          bundler-cache: false
+
+      - name: Validate runner architecture and release provenance
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$TARGET" in
+            mac-arm64)
+              expected_host_arch='arm64'
+              expected_node_arch='arm64'
+              ;;
+            mac-x64)
+              expected_host_arch='x86_64'
+              expected_node_arch='x64'
+              ;;
+            *)
+              echo "Unsupported macOS target: $TARGET" >&2
+              exit 2
+              ;;
+          esac
+          actual_host_arch="$(uname -m)"
+          actual_node_arch="$(node -p 'process.arch')"
+          if [[ "$actual_host_arch" != "$expected_host_arch" || "$actual_node_arch" != "$expected_node_arch" ]]; then
+            echo "Target $TARGET requires host/node $expected_host_arch/$expected_node_arch, got $actual_host_arch/$actual_node_arch" >&2
+            exit 1
+          fi
+
+          node scripts/validate-macos-desktop-source.mjs \
+            --application "$APPLICATION" \
+            --profile "$PROFILE" \
+            --source-dir source \
+            --tag "$TAG" \
+            --github-output "$GITHUB_OUTPUT"
+
+      - name: Configure build caches
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm_cache="$RUNNER_TEMP/gplus-npm-cache"
+          uv_cache="$RUNNER_TEMP/gplus-uv-cache"
+          electron_cache="$RUNNER_TEMP/gplus-electron-cache"
+          builder_cache="$RUNNER_TEMP/gplus-electron-builder-cache"
+          {
+            printf 'NPM_CONFIG_CACHE=%s\n' "$npm_cache"
+            printf 'UV_CACHE_DIR=%s\n' "$uv_cache"
+            printf 'electron_config_cache=%s\n' "$electron_cache"
+            printf 'ELECTRON_BUILDER_CACHE=%s\n' "$builder_cache"
+            printf 'NPM_CONFIG_AUDIT=false\n'
+            printf 'NPM_CONFIG_FUND=false\n'
+            printf 'NPM_CONFIG_PREFER_OFFLINE=true\n'
+          } >> "$GITHUB_ENV"
+
+      - name: Restore npm download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-npm-cache
+          key: gplus-runner-npm-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/package-rewrite.mjs', 'source/apps/libre-reader/pnpm-lock.yaml') }}
+          restore-keys: |
+            gplus-runner-npm-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-
+            gplus-runner-npm-${{ runner.os }}-${{ inputs.target }}-
+
+      - name: Restore uv download cache
+        if: inputs.application == 'gplus-bot-desktop'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-uv-cache
+          key: gplus-runner-uv-${{ runner.os }}-${{ inputs.target }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/python-dependency-profile.mjs', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/pyproject.toml', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/uv.lock') }}
+          restore-keys: |
+            gplus-runner-uv-${{ runner.os }}-${{ inputs.target }}-
+            gplus-runner-uv-${{ runner.os }}-
+
+      - name: Restore Electron download cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-cache
+          key: gplus-runner-electron-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+          restore-keys: |
+            gplus-runner-electron-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-
+            gplus-runner-electron-${{ runner.os }}-${{ inputs.target }}-
+
+      - name: Restore Electron Builder tool cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-builder-cache
+          key: gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+          restore-keys: |
+            gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-
+            gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.target }}-
+
+      - name: Install filtered dependencies
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          if [[ "$APPLICATION" == 'gplus-bot-desktop' ]]; then
+            corepack pnpm install --filter 'gplus-bot-desktop...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
+            corepack pnpm --filter '@gplus/bot-contracts' run build
+          else
+            corepack pnpm install --filter 'libre-reader...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
+          fi
+
+      - name: Prepare qshell
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          qshell_dir="$RUNNER_TEMP/gplus-qshell-bin"
+          export QSHELL_INSTALL_DIR="$qshell_dir"
+          source scripts/prepare_qshell.sh
+          qiniu_prepare_qshell
+          qshell_path="$(command -v qshell)"
+          test -x "$qshell_path"
+          {
+            printf 'QSHELL_INSTALL_DIR=%s\n' "$qshell_dir"
+            printf 'QSHELL=%s\n' "$qshell_path"
+          } >> "$GITHUB_ENV"
+          printf '%s\n' "$qshell_dir" >> "$GITHUB_PATH"
+
+      - name: Prepare macOS signing credentials
+        shell: bash
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
+          MAC_DEVELOPER_ID_P12_B64: ${{ secrets.MAC_DEVELOPER_ID_P12_B64 }}
+          MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
+          : "${ASC_KEY_P8_B64:?ASC_KEY_P8_B64 is required}"
+          : "${MAC_DEVELOPER_ID_P12_B64:?MAC_DEVELOPER_ID_P12_B64 is required}"
+          : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
+          if [[ ! "$ASC_KEY_ID" =~ ^[A-Za-z0-9]+$ ]]; then
+            echo 'ASC_KEY_ID contains unsupported path characters' >&2
+            exit 1
+          fi
+          credential_dir="$RUNNER_TEMP/gplus-macos-release-credentials"
+          mkdir -p "$credential_dir"
+          chmod 700 "$credential_dir"
+          asc_key_path="$credential_dir/AuthKey_${ASC_KEY_ID}.p8"
+          p12_path="$credential_dir/developer-id-application.p12"
+          decode_base64() {
+            if base64 --decode </dev/null >/dev/null 2>&1; then
+              base64 --decode
+            else
+              base64 -D
+            fi
+          }
+          printf '%s' "$ASC_KEY_P8_B64" | decode_base64 > "$asc_key_path"
+          printf '%s' "$MAC_DEVELOPER_ID_P12_B64" | decode_base64 > "$p12_path"
+          chmod 600 "$asc_key_path" "$p12_path"
+          test -s "$asc_key_path"
+          test -s "$p12_path"
+          openssl pkey -in "$asc_key_path" -noout
+          openssl pkcs12 -in "$p12_path" -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
+          {
+            printf 'ASC_KEY_PATH=%s\n' "$asc_key_path"
+            printf 'MAC_DEVELOPER_ID_P12_PATH=%s\n' "$p12_path"
+          } >> "$GITHUB_ENV"
+
+      - name: Publish signed and notarized release
+        working-directory: source
+        shell: bash
+        env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
+          MAC_DEVELOPER_ID_SHA1: ${{ secrets.MAC_DEVELOPER_ID_SHA1 }}
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
+          : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
+          : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
+          : "${MAC_DEVELOPER_ID_SHA1:?MAC_DEVELOPER_ID_SHA1 is required}"
+          : "${QINIU_ACCESS_KEY:?QINIU_ACCESS_KEY is required}"
+          : "${QINIU_SECRET_KEY:?QINIU_SECRET_KEY is required}"
+          : "${RELEASE_TOKEN:?RELEASE_TOKEN is required}"
+          if [[ "$APPLICATION" == 'gplus-bot-desktop' ]]; then
+            export GPLUS_DESKTOP_CREDENTIALS_ACTIVE=1
+            npm --prefix apps/gplus-bot-desktop run release:local -- \
+              --tag "$TAG" \
+              --target "$TARGET" \
+              --provider qiniu
+          else
+            export LIBRE_RELEASE_CREDENTIALS_ACTIVE=1
+            corepack pnpm --filter libre-reader run release:local -- \
+              --profile "$PROFILE" \
+              --version "${{ steps.source.outputs.version }}" \
+              --target "$TARGET"
+          fi
+
+      - name: Write release summary
+        if: success()
+        shell: bash
+        env:
+          BUILD_NUMBER: ${{ steps.source.outputs.build_number }}
+          SOURCE_REF: ${{ steps.source.outputs.source_ref }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          TAG_OBJECT_ID: ${{ steps.source.outputs.tag_object_id }}
+          VERSION: ${{ steps.source.outputs.version }}
+        run: |
+          set -euo pipefail
+          {
+            printf '%s\n' '### macOS Desktop release'
+            printf '\n%s\n' "- Application/profile: $APPLICATION / $PROFILE"
+            printf '%s\n' "- Target: $TARGET"
+            printf '%s\n' "- Tag: $TAG"
+            printf '%s\n' "- Tag object: $TAG_OBJECT_ID"
+            printf '%s\n' "- Source: $SOURCE_SHA ($SOURCE_REF)"
+            printf '%s\n' "- Version/build: $VERSION / $BUILD_NUMBER"
+            printf '%s\n' '- Result: signed, notarized, uploaded to Qiniu, and registered with Release API'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Save npm download cache
+        if: always() && steps.source-checkout.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-npm-cache
+          key: gplus-runner-npm-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/package-rewrite.mjs', 'source/apps/libre-reader/pnpm-lock.yaml') }}
+
+      - name: Save uv download cache
+        if: always() && inputs.application == 'gplus-bot-desktop' && steps.source-checkout.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-uv-cache
+          key: gplus-runner-uv-${{ runner.os }}-${{ inputs.target }}-${{ hashFiles('source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/gplus-bot-desktop/src/overlay/python-dependency-profile.mjs', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/pyproject.toml', 'source/apps/gplus-bot-desktop/vendor/hermes-agent/uv.lock') }}
+
+      - name: Save Electron download cache
+        if: always() && steps.source-checkout.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-cache
+          key: gplus-runner-electron-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+
+      - name: Save Electron Builder tool cache
+        if: always() && steps.source-checkout.outcome == 'success'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/gplus-electron-builder-cache
+          key: gplus-runner-electron-builder-${{ runner.os }}-${{ inputs.target }}-${{ inputs.application }}-${{ hashFiles('source/pnpm-lock.yaml', 'source/apps/gplus-bot-desktop/vendor/hermes-source-lock.json', 'source/apps/libre-reader/package.json') }}
+
+      - name: Remove macOS release credentials and GitHub token
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          credential_dir="$RUNNER_TEMP/gplus-macos-release-credentials"
+          rm -f "$credential_dir/AuthKey_"*.p8 "$credential_dir/developer-id-application.p12"
+          rmdir "$credential_dir" 2>/dev/null || true
+          if [[ -d source/.git ]]; then
+            git -C source config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+            git -C source submodule foreach --recursive \
+              'git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true' \
+              2>/dev/null || true
+          fi

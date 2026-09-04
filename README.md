@@ -1,8 +1,8 @@
 # gplus-runner
 
-Public GitHub Actions runner for private `loulin/gplus` Bot Desktop Windows
-builds. The public repository contains workflow code and operating documents;
-the application source remains private.
+Public GitHub Actions runner for private `loulin/gplus` Bot Desktop and Libre
+Reader builds. The public repository contains workflow code and operating
+documents; the application source remains private.
 
 ## Current status
 
@@ -27,6 +27,11 @@ the application source remains private.
 
 The complete process and the remaining implementation work are in
 [`docs/windows-desktop-release-plan.md`](docs/windows-desktop-release-plan.md).
+
+`macOS Desktop Release` is the formal signed publishing workflow. It supports
+both applications, `staging` and `production`, and native `mac-arm64` and
+`mac-x64` runners. The complete setup and operating procedure are in
+[`docs/macos-desktop-release.md`](docs/macos-desktop-release.md).
 
 The last successful hosted Windows package build before encrypted handoff was
 run on 2026-09-01:
@@ -53,8 +58,30 @@ Configure these two repository secrets in `loulin/gplus-runner`:
   key.
 
 The App installation must remain limited to `loulin/gplus` and
-`Contents: Read-only`. Never add Qiniu, Release API, Certum, SimplySign, or
-Windows signing credentials to this public repository or its workflow.
+`Contents: Read-only`. Windows handoff mode does not use publishing
+credentials. macOS formal publishing uses environment-scoped credentials as
+described below; values must never be committed to this repository or printed
+in workflow output.
+
+The `staging` and `production` Environments must each contain these macOS
+publishing secrets:
+
+```text
+ASC_ISSUER_ID
+ASC_KEY_ID
+ASC_KEY_P8_B64
+MAC_DEVELOPER_ID_P12_B64
+MAC_DEVELOPER_ID_P12_PASSWORD
+MAC_DEVELOPER_ID_SHA1
+QINIU_ACCESS_KEY
+QINIU_SECRET_KEY
+RELEASE_TOKEN
+```
+
+`production` remains protected by its required reviewer rule. The workflow
+decodes the P8 and P12 material only into the ephemeral macOS runner, signs and
+notarizes the package, publishes through the source release adapter, and
+removes the files in an `always()` cleanup step.
 
 Configure this repository variable before starting a build:
 
@@ -94,8 +121,8 @@ the repository, a runner workspace, an Actions artifact, or a log.
 
 ## Build cache boundary
 
-The workflow caches only dependency-download data under the temporary Windows
-runner directory:
+The workflows cache only dependency-download data under each temporary runner
+directory:
 
 - uv's PyPI cache, keyed by the Hermes lock and Desktop Python dependency
   profile.
@@ -110,7 +137,38 @@ the generated Desktop workspace, `win-unpacked`, installers, or handoff files.
 Cache changes take effect on the next manually started run; updating this
 workflow does not trigger a build.
 
-## Run a build handoff
+## Run a macOS release
+
+Use the canonical annotated application tag from the private `loulin/gplus`
+repository. Each run handles one application, profile, and target:
+
+```bash
+gh workflow run release-macos-desktop.yml \
+  --repo loulin/gplus-runner \
+  --ref main \
+  -f application=gplus-bot-desktop \
+  -f profile=staging \
+  -f tag=gplus-bot-desktop-v0.2.2-rc.1 \
+  -f target=mac-arm64
+```
+
+For Libre Reader use `libre-reader-vX.Y.Z-staging` with `profile=staging`, or
+the stable `libre-reader-vX.Y.Z` tag with `profile=production`. Production
+waits for Environment approval before its secrets are exposed to the job.
+
+Inspect the result:
+
+```bash
+gh run list --repo loulin/gplus-runner \
+  --workflow release-macos-desktop.yml --limit 5
+gh run watch <run-id> --repo loulin/gplus-runner --exit-status
+```
+
+The summary records the tag object, source SHA, source ref, version, and build
+number. A successful run has completed Developer ID signing, Apple
+notarization, Qiniu upload, CDN refresh, and Release API registration.
+
+## Run a Windows build handoff
 
 Use the Actions UI or run from a shell with `gh`:
 
@@ -200,9 +258,9 @@ signing, but it cannot be published as a formal release.
 
 ## Security rule
 
-The private checkout is temporary runner state. The workflow uses a short-lived
-GitHub App token and disables checkout credential persistence. Age mode uploads
-only a sanitized manifest plus encrypted handoff. None mode is an explicit
-plaintext exception for a short-lived transport artifact; download and delete
-it immediately, and never upload `source/`, a private key, or a standalone
-installer.
+The private checkout is temporary runner state. The Windows workflow disables
+checkout credential persistence and uploads only a sanitized manifest plus an
+encrypted handoff by default. The macOS workflow keeps the short-lived GitHub
+App credential only while the release adapter re-checks remote tag identity and
+removes its extraheader during cleanup. Neither workflow uploads `source/`, a
+private key, or a standalone installer as a GitHub artifact.
