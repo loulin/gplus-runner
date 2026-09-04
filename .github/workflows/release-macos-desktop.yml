@@ -91,9 +91,20 @@ jobs:
           auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           hermes_path='apps/gplus-bot-desktop/vendor/hermes-agent'
           hermes_checkout="$PWD/$hermes_path"
+          hermes_url="$(git config --file .gitmodules --get "submodule.$hermes_path.url")"
           hermes_tag="$(jq -er '.upstream.tag' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
+          expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
+          expected_hermes_tag_object="$(jq -er '.upstream.tagObject' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
+          if [[ "$hermes_url" != 'https://github.com/NousResearch/hermes-agent.git' ]]; then
+            echo "Unexpected Hermes submodule URL: $hermes_url" >&2
+            exit 1
+          fi
           if [[ ! "$hermes_tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]; then
             echo "Invalid Hermes source tag in source lock: $hermes_tag" >&2
+            exit 1
+          fi
+          if [[ ! "$expected_hermes_commit" =~ ^[0-9a-f]{40}$ || ! "$expected_hermes_tag_object" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'Invalid Hermes source identity in release commit' >&2
             exit 1
           fi
           git_with_github_auth() {
@@ -111,10 +122,15 @@ jobs:
           for attempt in 1 2 3 4 5; do
             if git_with_github_auth submodule update \
               --init --checkout --recursive -- "$hermes_path"; then
-              expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
               actual_hermes_commit="$(git -C "$hermes_path" rev-parse HEAD)"
               if [[ "$actual_hermes_commit" != "$expected_hermes_commit" ]]; then
                 echo "Hermes gitlink mismatch: expected $expected_hermes_commit, got $actual_hermes_commit" >&2
+                exit 1
+              fi
+              actual_hermes_tag_object="$(git -C "$hermes_path" rev-parse "refs/tags/$hermes_tag^{tag}")"
+              actual_hermes_tag_commit="$(git -C "$hermes_path" rev-parse "refs/tags/$hermes_tag^{commit}")"
+              if [[ "$actual_hermes_tag_object" != "$expected_hermes_tag_object" || "$actual_hermes_tag_commit" != "$expected_hermes_commit" ]]; then
+                echo "Hermes tag identity mismatch: expected $expected_hermes_tag_object/$expected_hermes_commit, got $actual_hermes_tag_object/$actual_hermes_tag_commit" >&2
                 exit 1
               fi
               if [[ -n "$(git -C "$hermes_path" status --porcelain --untracked-files=all)" ]]; then
