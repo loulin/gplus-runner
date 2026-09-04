@@ -71,10 +71,43 @@ jobs:
           token: ${{ steps.source-token.outputs.token }}
           path: source
           fetch-depth: 0
-          submodules: recursive
+          # Initialize the Gplus-only Hermes submodule in a separate retrying
+          # step below; Libre Reader does not consume it.
+          submodules: false
           # release:local performs authenticated ls-remote calls while it
           # revalidates the annotated release identity.
           persist-credentials: true
+
+      - name: Initialize Hermes submodule with retry
+        if: inputs.application == 'gplus-bot-desktop'
+        working-directory: source
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ steps.source-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+          export GIT_TERMINAL_PROMPT=0
+          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+          git submodule sync --recursive
+          for attempt in 1 2 3 4 5; do
+            if GIT_CONFIG_GLOBAL=/dev/null git \
+              -c protocol.version=2 \
+              -c http.version=HTTP/1.1 \
+              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_header" \
+              submodule update \
+              --init --checkout --recursive \
+              -- apps/gplus-bot-desktop/vendor/hermes-agent; then
+              exit 0
+            fi
+            if [[ "$attempt" == 5 ]]; then
+              echo 'Hermes submodule initialization failed after 5 attempts' >&2
+              exit 1
+            fi
+            delay=$((attempt * 15))
+            echo "Hermes submodule initialization failed; retrying in ${delay}s" >&2
+            sleep "$delay"
+          done
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -225,12 +258,14 @@ jobs:
       - name: Prepare macOS signing credentials
         shell: bash
         env:
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
           MAC_DEVELOPER_ID_P12_B64: ${{ secrets.MAC_DEVELOPER_ID_P12_B64 }}
           MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
         run: |
           set -euo pipefail
+          : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
           : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
           : "${ASC_KEY_P8_B64:?ASC_KEY_P8_B64 is required}"
           : "${MAC_DEVELOPER_ID_P12_B64:?MAC_DEVELOPER_ID_P12_B64 is required}"
@@ -261,6 +296,10 @@ jobs:
           {
             printf 'ASC_KEY_PATH=%s\n' "$asc_key_path"
             printf 'MAC_DEVELOPER_ID_P12_PATH=%s\n' "$p12_path"
+            printf 'APPLE_API_KEY=%s\n' "$asc_key_path"
+            printf 'APPLE_API_KEY_PATH=%s\n' "$asc_key_path"
+            printf 'APPLE_API_KEY_ID=%s\n' "$ASC_KEY_ID"
+            printf 'APPLE_API_ISSUER=%s\n' "$ASC_ISSUER_ID"
           } >> "$GITHUB_ENV"
 
       - name: Publish signed and notarized release
