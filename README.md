@@ -63,6 +63,9 @@ credentials. macOS formal publishing uses environment-scoped credentials as
 described below; values must never be committed to this repository or printed
 in workflow output.
 
+These two source checkout secrets are repository-scoped. The Hermes SSH key
+used by Desktop release jobs is environment-scoped and is listed below.
+
 The `staging` and `production` Environments must each contain these release
 secrets:
 

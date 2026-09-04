@@ -87,7 +87,7 @@ jobs:
       - name: Prepare locked Hermes source
         if: inputs.application == 'gplus-bot-desktop'
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          HERMES_SOURCE_SSH_KEY: ${{ secrets.HERMES_SOURCE_SSH_KEY }}
         run: |
           set -euo pipefail
           node scripts/prepare-macos-hermes-source.mjs --source-dir source
