@@ -83,7 +83,7 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ steps.source-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
