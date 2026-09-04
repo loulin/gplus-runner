@@ -71,7 +71,10 @@ jobs:
           token: ${{ steps.source-token.outputs.token }}
           path: source
           fetch-depth: 0
-          submodules: recursive
+          # Libre Reader does not consume the Gplus-only Hermes submodule.
+          # Avoid an unrelated public GitHub clone and its rate limit on the
+          # Libre path; Gplus still initializes the locked submodule here.
+          submodules: ${{ inputs.application == 'gplus-bot-desktop' && 'recursive' || 'false' }}
           # release:local performs authenticated ls-remote calls while it
           # revalidates the annotated release identity.
           persist-credentials: true
