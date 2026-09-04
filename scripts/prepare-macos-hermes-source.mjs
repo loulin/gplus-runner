@@ -189,6 +189,7 @@ function prepareCheckout({ sourceDir, identity, sshEnv }) {
   );
   run('git', ['-C', hermesCheckout, 'checkout', '--detach', '--force', identity.commit], {
     env: sshEnv,
+    timeoutMs: GIT_FETCH_TIMEOUT_MS,
   });
 
   const actualTagObject = assertOid(
