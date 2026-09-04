@@ -83,21 +83,49 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ steps.source-token.outputs.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
           export GIT_TERMINAL_PROMPT=0
           auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
-          git submodule sync --recursive
-          for attempt in 1 2 3 4 5; do
-            if GIT_CONFIG_GLOBAL=/dev/null git \
+          hermes_path='apps/gplus-bot-desktop/vendor/hermes-agent'
+          hermes_checkout="$PWD/$hermes_path"
+          hermes_tag="$(jq -er '.upstream.tag' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
+          if [[ ! "$hermes_tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]; then
+            echo "Invalid Hermes source tag in source lock: $hermes_tag" >&2
+            exit 1
+          fi
+          git_with_github_auth() {
+            GIT_CONFIG_GLOBAL=/dev/null git \
               -c protocol.version=2 \
               -c http.version=HTTP/1.1 \
+              -c http.connectTimeout=30 \
+              -c http.lowSpeedLimit=1000 \
+              -c http.lowSpeedTime=30 \
+              -c http.maxRequests=1 \
               -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_header" \
-              submodule update \
-              --init --checkout --recursive \
-              -- apps/gplus-bot-desktop/vendor/hermes-agent; then
+              "$@"
+          }
+          git submodule sync --recursive
+          for attempt in 1 2 3 4 5; do
+            if git_with_github_auth submodule update \
+              --init --checkout --recursive -- "$hermes_path"; then
+              expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
+              actual_hermes_commit="$(git -C "$hermes_path" rev-parse HEAD)"
+              if [[ "$actual_hermes_commit" != "$expected_hermes_commit" ]]; then
+                echo "Hermes gitlink mismatch: expected $expected_hermes_commit, got $actual_hermes_commit" >&2
+                exit 1
+              fi
+              if [[ -n "$(git -C "$hermes_path" status --porcelain --untracked-files=all)" ]]; then
+                echo 'Hermes checkout is dirty after initialization' >&2
+                exit 1
+              fi
+              # release:local creates another worktree. Point its temporary
+              # submodule clone at this verified checkout to avoid a second
+              # public GitHub fetch during release preparation.
+              git config --local "submodule.$hermes_path.url" "$hermes_checkout"
+              git config --local "submodule.$hermes_path.active" true
               exit 0
             fi
             if [[ "$attempt" == 5 ]]; then
@@ -262,14 +290,12 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
           MAC_DEVELOPER_ID_P12_B64: ${{ secrets.MAC_DEVELOPER_ID_P12_B64 }}
-          MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
         run: |
           set -euo pipefail
           : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
           : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
           : "${ASC_KEY_P8_B64:?ASC_KEY_P8_B64 is required}"
           : "${MAC_DEVELOPER_ID_P12_B64:?MAC_DEVELOPER_ID_P12_B64 is required}"
-          : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
           if [[ ! "$ASC_KEY_ID" =~ ^[A-Za-z0-9]+$ ]]; then
             echo 'ASC_KEY_ID contains unsupported path characters' >&2
             exit 1
@@ -292,7 +318,6 @@ jobs:
           test -s "$asc_key_path"
           test -s "$p12_path"
           openssl pkey -in "$asc_key_path" -noout
-          openssl pkcs12 -in "$p12_path" -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
           {
             printf 'ASC_KEY_PATH=%s\n' "$asc_key_path"
             printf 'MAC_DEVELOPER_ID_P12_PATH=%s\n' "$p12_path"
@@ -317,11 +342,15 @@ jobs:
           set -euo pipefail
           : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
           : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
+          : "${ASC_KEY_PATH:?ASC_KEY_PATH is required}"
           : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
+          : "${MAC_DEVELOPER_ID_P12_PATH:?MAC_DEVELOPER_ID_P12_PATH is required}"
           : "${MAC_DEVELOPER_ID_SHA1:?MAC_DEVELOPER_ID_SHA1 is required}"
           : "${QINIU_ACCESS_KEY:?QINIU_ACCESS_KEY is required}"
           : "${QINIU_SECRET_KEY:?QINIU_SECRET_KEY is required}"
           : "${RELEASE_TOKEN:?RELEASE_TOKEN is required}"
+          openssl pkcs12 -in "$MAC_DEVELOPER_ID_P12_PATH" \
+            -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
           if [[ "$APPLICATION" == 'gplus-bot-desktop' ]]; then
             export GPLUS_DESKTOP_CREDENTIALS_ACTIVE=1
             npm --prefix apps/gplus-bot-desktop run release:local -- \
