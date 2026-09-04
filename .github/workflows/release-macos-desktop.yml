@@ -83,7 +83,7 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
           : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
@@ -297,6 +297,7 @@ jobs:
             printf 'ASC_KEY_PATH=%s\n' "$asc_key_path"
             printf 'MAC_DEVELOPER_ID_P12_PATH=%s\n' "$p12_path"
             printf 'APPLE_API_KEY=%s\n' "$asc_key_path"
+            printf 'APPLE_API_KEY_PATH=%s\n' "$asc_key_path"
             printf 'APPLE_API_KEY_ID=%s\n' "$ASC_KEY_ID"
             printf 'APPLE_API_ISSUER=%s\n' "$ASC_ISSUER_ID"
           } >> "$GITHUB_ENV"
