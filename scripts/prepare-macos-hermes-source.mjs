@@ -187,7 +187,9 @@ function prepareCheckout({ sourceDir, identity, sshEnv }) {
     'Hermes commit fetch',
     sshEnv,
   );
-  run('git', ['-C', hermesCheckout, 'checkout', '--detach', '--force', identity.commit]);
+  run('git', ['-C', hermesCheckout, 'checkout', '--detach', '--force', identity.commit], {
+    env: sshEnv,
+  });
 
   const actualTagObject = assertOid(
     output('git', ['-C', hermesCheckout, 'rev-parse', `refs/tags/${identity.tag}^{tag}`]),
