@@ -71,116 +71,26 @@ jobs:
           token: ${{ steps.source-token.outputs.token }}
           path: source
           fetch-depth: 0
-          # Initialize the Gplus-only Hermes submodule in a separate retrying
-          # step below; Libre Reader does not consume it.
+          # Prepare the Gplus-only Hermes source in a separate step below;
+          # Libre Reader does not consume it.
           submodules: false
           # release:local performs authenticated ls-remote calls while it
           # revalidates the annotated release identity.
           persist-credentials: true
-
-      - name: Initialize Hermes submodule from locked tag
-        if: inputs.application == 'gplus-bot-desktop'
-        working-directory: source
-        shell: bash
-        env:
-          HERMES_SOURCE_SSH_KEY: ${{ secrets.HERMES_SOURCE_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          : "${HERMES_SOURCE_SSH_KEY:?HERMES_SOURCE_SSH_KEY is required}"
-          export GIT_TERMINAL_PROMPT=0
-          hermes_path='apps/gplus-bot-desktop/vendor/hermes-agent'
-          hermes_checkout="$PWD/$hermes_path"
-          hermes_url="$(git config --file .gitmodules --get "submodule.$hermes_path.url")"
-          hermes_ssh_url='git@github.com:NousResearch/hermes-agent.git'
-          hermes_tag="$(jq -er '.upstream.tag' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
-          expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
-          expected_hermes_tag_object="$(jq -er '.upstream.tagObject' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
-          if [[ "$hermes_url" != 'https://github.com/NousResearch/hermes-agent.git' ]]; then
-            echo "Unexpected Hermes submodule URL: $hermes_url" >&2
-            exit 1
-          fi
-          if [[ ! "$hermes_tag" =~ ^v[0-9]+(\.[0-9]+){2,3}$ ]]; then
-            echo "Invalid Hermes source tag in source lock: $hermes_tag" >&2
-            exit 1
-          fi
-          if [[ ! "$expected_hermes_commit" =~ ^[0-9a-f]{40}$ || ! "$expected_hermes_tag_object" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Invalid Hermes source identity in release commit" >&2
-            exit 1
-          fi
-          git submodule sync --recursive
-          ssh_dir="$RUNNER_TEMP/gplus-hermes-ssh"
-          ssh_key_path="$ssh_dir/id_ed25519"
-          known_hosts_path="$ssh_dir/known_hosts"
-          mkdir -p "$ssh_dir"
-          chmod 700 "$ssh_dir"
-          printf '%s\n' "$HERMES_SOURCE_SSH_KEY" > "$ssh_key_path"
-          chmod 600 "$ssh_key_path"
-          ssh-keyscan -T 30 -p 443 -t ed25519 ssh.github.com > "$known_hosts_path" 2>/dev/null
-          test -s "$known_hosts_path"
-          host_fingerprint="$(ssh-keygen -lf "$known_hosts_path" | awk 'NR == 1 { print $2 }')"
-          if [[ "$host_fingerprint" != 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU' ]]; then
-            echo "Unexpected ssh.github.com host key fingerprint: $host_fingerprint" >&2
-            exit 1
-          fi
-          git_ssh_command="ssh -i $ssh_key_path -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts_path -o HostName=ssh.github.com -p 443"
-          export GIT_SSH_COMMAND="$git_ssh_command"
-          printf 'GIT_SSH_COMMAND=%s\n' "$git_ssh_command" >> "$GITHUB_ENV"
-          git config --local \
-            url."$hermes_ssh_url".insteadOf \
-            "$hermes_url"
-          git_with_github_ssh() {
-            GIT_CONFIG_GLOBAL=/dev/null git \
-              -c protocol.version=2 \
-              "$@"
-          }
-          for attempt in 1 2 3 4 5; do
-            if [[ -e "$hermes_checkout" ]]; then
-              rm -rf -- "$hermes_checkout"
-            fi
-            if mkdir -p "$(dirname "$hermes_checkout")" \
-              && git init --quiet "$hermes_checkout" \
-              && git -C "$hermes_checkout" remote add origin "$hermes_ssh_url" \
-              && git_with_github_ssh -C "$hermes_checkout" fetch \
-                --no-tags --depth 1 --filter=blob:none origin \
-                "refs/tags/$hermes_tag:refs/tags/$hermes_tag" \
-              && git -C "$hermes_checkout" checkout --quiet --detach "$expected_hermes_commit"; then
-              actual_hermes_commit="$(git -C "$hermes_path" rev-parse HEAD)"
-              if [[ "$actual_hermes_commit" != "$expected_hermes_commit" ]]; then
-                echo "Hermes gitlink mismatch: expected $expected_hermes_commit, got $actual_hermes_commit" >&2
-                exit 1
-              fi
-              actual_hermes_tag_object="$(git -C "$hermes_path" rev-parse "refs/tags/$hermes_tag^{tag}")"
-              actual_hermes_tag_commit="$(git -C "$hermes_path" rev-parse "refs/tags/$hermes_tag^{commit}")"
-              if [[ "$actual_hermes_tag_object" != "$expected_hermes_tag_object" || "$actual_hermes_tag_commit" != "$expected_hermes_commit" ]]; then
-                echo "Hermes tag identity mismatch: expected $expected_hermes_tag_object/$expected_hermes_commit, got $actual_hermes_tag_object/$actual_hermes_tag_commit" >&2
-                exit 1
-              fi
-              if [[ -n "$(git -C "$hermes_path" status --porcelain --untracked-files=all)" ]]; then
-                echo 'Hermes checkout is dirty after initialization' >&2
-                exit 1
-              fi
-              git submodule init -- "$hermes_path"
-              # release:local creates another worktree. Point its temporary
-              # submodule clone at this verified checkout to avoid a second
-              # public GitHub fetch during release preparation.
-              git config --local "submodule.$hermes_path.url" "$hermes_checkout"
-              git config --local "submodule.$hermes_path.active" true
-              exit 0
-            fi
-            if [[ "$attempt" == 5 ]]; then
-              echo 'Hermes submodule initialization failed after 5 attempts' >&2
-              exit 1
-            fi
-            delay=$((attempt * 15))
-            echo "Hermes submodule initialization failed; retrying in ${delay}s" >&2
-            sleep "$delay"
-          done
 
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
           architecture: ${{ inputs.target == 'mac-arm64' && 'arm64' || 'x64' }}
+
+      - name: Prepare locked Hermes source
+        if: inputs.application == 'gplus-bot-desktop'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          node scripts/prepare-macos-hermes-source.mjs --source-dir source
 
       - name: Setup packaging Python
         if: inputs.application == 'gplus-bot-desktop'
@@ -484,11 +394,8 @@ jobs:
         run: |
           set +e
           credential_dir="$RUNNER_TEMP/gplus-macos-release-credentials"
-          ssh_dir="$RUNNER_TEMP/gplus-hermes-ssh"
           rm -f "$credential_dir/AuthKey_"*.p8 "$credential_dir/developer-id-application.p12"
           rmdir "$credential_dir" 2>/dev/null || true
-          rm -f "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
-          rmdir "$ssh_dir" 2>/dev/null || true
           if [[ -d source/.git ]]; then
             git -C source config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
             git -C source submodule foreach --recursive \
