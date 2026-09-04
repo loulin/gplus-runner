@@ -110,11 +110,7 @@ jobs:
           git submodule sync --recursive
           for attempt in 1 2 3 4 5; do
             if git_with_github_auth submodule update \
-              --init --checkout --depth 1 --filter=blob:none --recursive \
-              -- "$hermes_path" \
-              && git_with_github_auth -C "$hermes_path" fetch \
-                --no-recurse-submodules --depth 1 --filter=blob:none origin \
-                "refs/tags/$hermes_tag:refs/tags/$hermes_tag"; then
+              --init --checkout --recursive -- "$hermes_path"; then
               expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
               actual_hermes_commit="$(git -C "$hermes_path" rev-parse HEAD)"
               if [[ "$actual_hermes_commit" != "$expected_hermes_commit" ]]; then
