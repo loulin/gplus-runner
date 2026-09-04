@@ -9,9 +9,11 @@ import { fileURLToPath } from 'node:url';
 
 const HERMES_PATH = 'apps/gplus-bot-desktop/vendor/hermes-agent';
 const HERMES_URL = 'https://github.com/NousResearch/hermes-agent.git';
+const HERMES_SSH_URL = 'git@github.com:NousResearch/hermes-agent.git';
 const HERMES_REPOSITORY = 'NousResearch/hermes-agent';
 const HERMES_TAG_PATTERN = /^v\d{4}\.\d+\.\d+(?:\.\d+)?$/u;
 const GIT_OID_PATTERN = /^[0-9a-f]{40}$/u;
+const GITHUB_SSH_HOST_FINGERPRINT = 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU';
 const FETCH_ATTEMPTS = 5;
 const GIT_FETCH_TIMEOUT_MS = 120_000;
 
@@ -26,34 +28,17 @@ function parseArguments(argv) {
   return { sourceDir: path.resolve(argv[1]) };
 }
 
-export function buildGitAuthEnvironment(token) {
-  const normalizedToken = String(token || '').trim();
-  if (!normalizedToken) fail('GitHub token is required for authenticated Git operations');
-  return {
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
-    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${normalizedToken}`, 'utf8').toString('base64')}`,
-  };
-}
-
-function run(command, args, { cwd, auth = false, timeoutMs } = {}) {
-  const environment = {
-    ...process.env,
-    GIT_CONFIG_GLOBAL: '/dev/null',
-    GIT_TERMINAL_PROMPT: '0',
-  };
-  if (auth) {
-    Object.assign(environment, buildGitAuthEnvironment(githubToken()));
-  } else {
-    delete environment.GIT_CONFIG_COUNT;
-    delete environment.GIT_CONFIG_KEY_0;
-    delete environment.GIT_CONFIG_VALUE_0;
-  }
+function run(command, args, { cwd, env, timeoutMs } = {}) {
   try {
     return execFileSync(command, args, {
       cwd,
       encoding: 'utf8',
-      env: environment,
+      env: {
+        ...process.env,
+        ...env,
+        GIT_CONFIG_GLOBAL: '/dev/null',
+        GIT_TERMINAL_PROMPT: '0',
+      },
       timeout: timeoutMs,
       killSignal: 'SIGTERM',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -69,10 +54,10 @@ function output(command, args, options) {
   return String(run(command, args, options)).trim();
 }
 
-function githubToken() {
-  const token = process.env.GITHUB_TOKEN?.trim();
-  if (!token) fail('GITHUB_TOKEN is required to fetch the public Hermes source');
-  return token;
+function hermesSshKey() {
+  const key = process.env.HERMES_SOURCE_SSH_KEY?.trim();
+  if (!key) fail('HERMES_SOURCE_SSH_KEY is required to fetch the public Hermes source');
+  return key;
 }
 
 function assertOid(value, label) {
@@ -125,66 +110,51 @@ function readExpectedIdentity(sourceDir, upstream) {
   };
 }
 
-export function validateArchiveListing(listing) {
-  const entries = String(listing)
+export function hermesSshUrl() {
+  return HERMES_SSH_URL;
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function prepareSshEnvironment(tempRoot) {
+  const sshKeyPath = path.join(tempRoot, 'id_ed25519');
+  const knownHostsPath = path.join(tempRoot, 'known_hosts');
+  writeFileSync(sshKeyPath, `${hermesSshKey()}\n`, { encoding: 'utf8', mode: 0o600 });
+  const knownHosts = run('ssh-keyscan', [
+    '-T', '30', '-p', '443', '-t', 'ed25519', 'ssh.github.com',
+  ], { timeoutMs: GIT_FETCH_TIMEOUT_MS });
+  writeFileSync(knownHostsPath, knownHosts, { encoding: 'utf8', mode: 0o600 });
+  if (!knownHosts.trim()) fail('ssh-keyscan returned no host key for ssh.github.com');
+  const hostFingerprint = output('ssh-keygen', ['-lf', knownHostsPath])
     .split(/\r?\n/u)
-    .map((entry) => entry.trim())
-    .filter(Boolean);
-  if (entries.length === 0) fail('Hermes source archive is empty');
-
-  let root = '';
-  for (const entry of entries) {
-    if (entry.startsWith('/') || entry.includes('\\')) {
-      fail(`Hermes source archive contains an unsafe path: ${entry}`);
-    }
-    const parts = entry.replace(/\/$/u, '').split('/');
-    if (parts.some((part) => !part || part === '.' || part === '..')) {
-      fail(`Hermes source archive contains an unsafe path: ${entry}`);
-    }
-    if (!root) root = parts[0];
-    if (parts[0] !== root) {
-      fail('Hermes source archive contains multiple top-level directories');
-    }
+    .map((line) => line.trim().split(/\s+/u)[1])
+    .find(Boolean);
+  if (hostFingerprint !== GITHUB_SSH_HOST_FINGERPRINT) {
+    fail(`unexpected ssh.github.com host key fingerprint: ${hostFingerprint || 'missing'}`);
   }
-  return root;
+  return {
+    GIT_SSH_COMMAND: [
+      'ssh',
+      '-i', shellQuote(sshKeyPath),
+      '-o', 'IdentitiesOnly=yes',
+      '-o', 'BatchMode=yes',
+      '-o', 'StrictHostKeyChecking=yes',
+      '-o', `UserKnownHostsFile=${shellQuote(knownHostsPath)}`,
+      '-o', 'HostName=ssh.github.com',
+      '-p', '443',
+    ].join(' '),
+  };
 }
 
-function downloadHermesArchive(tempRoot, commit) {
-  const archivePath = path.join(tempRoot, 'hermes-source.tar.gz');
-  const token = githubToken();
-  const curlConfigPath = path.join(tempRoot, 'curl-config');
-  writeFileSync(curlConfigPath, [
-    'silent',
-    'show-error',
-    'location',
-    'fail',
-    'retry = 4',
-    'retry-all-errors',
-    'retry-delay = 15',
-    'connect-timeout = 30',
-    'max-time = 120',
-    'header = "Accept: application/vnd.github+json"',
-    `header = "Authorization: Bearer ${token}"`,
-    'header = "User-Agent: gplus-runner-macos-release"',
-    `output = "${archivePath}"`,
-    `url = "https://api.github.com/repos/${HERMES_REPOSITORY}/tarball/${commit}"`,
-    '',
-  ].join('\n'), { encoding: 'utf8', mode: 0o600 });
-  try {
-    run('curl', ['--config', curlConfigPath]);
-  } finally {
-    rmSync(curlConfigPath, { force: true });
-  }
-  return archivePath;
-}
-
-function fetchWithRetry(repoPath, args, label) {
+function fetchWithRetry(repoPath, args, label, env) {
   let lastError;
   for (let attempt = 1; attempt <= FETCH_ATTEMPTS; attempt += 1) {
     try {
       run('git', args, {
         cwd: repoPath,
-        auth: true,
+        env,
         timeoutMs: GIT_FETCH_TIMEOUT_MS,
       });
       return;
@@ -199,34 +169,25 @@ function fetchWithRetry(repoPath, args, label) {
   throw lastError;
 }
 
-function prepareCheckout({ sourceDir, archivePath, identity }) {
+function prepareCheckout({ sourceDir, identity, sshEnv }) {
   const hermesCheckout = path.join(sourceDir, HERMES_PATH);
   rmSync(hermesCheckout, { recursive: true, force: true });
   mkdirSync(hermesCheckout, { recursive: true, mode: 0o755 });
-  run('tar', [
-    '-xzf', archivePath,
-    '--strip-components=1',
-    '--no-same-owner',
-    '-C', hermesCheckout,
-  ]);
   run('git', ['init', '--quiet', hermesCheckout]);
   run('git', ['-C', hermesCheckout, 'config', 'core.autocrlf', 'false']);
   run('git', ['-C', hermesCheckout, 'config', 'core.symlinks', 'true']);
-  run('git', ['-C', hermesCheckout, 'remote', 'add', 'origin', HERMES_URL]);
+  run('git', ['-C', hermesCheckout, 'remote', 'add', 'origin', HERMES_SSH_URL]);
 
   fetchWithRetry(
     hermesCheckout,
-    ['fetch', '--no-tags', '--depth', '1', '--filter=blob:none', 'origin', identity.commit],
-    'Hermes commit fetch',
-  );
-  fetchWithRetry(
-    hermesCheckout,
     [
-      'fetch', '--depth', '1', '--filter=blob:none', 'origin',
-      `refs/tags/${identity.tag}:refs/tags/${identity.tag}`,
+      '-c', 'protocol.version=2', 'fetch', '--no-tags', '--depth', '1', '--filter=blob:none',
+      'origin', `refs/tags/${identity.tag}:refs/tags/${identity.tag}`,
     ],
-    'Hermes annotated tag fetch',
+    'Hermes commit fetch',
+    sshEnv,
   );
+  run('git', ['-C', hermesCheckout, 'checkout', '--detach', '--force', identity.commit]);
 
   const actualTagObject = assertOid(
     output('git', ['-C', hermesCheckout, 'rev-parse', `refs/tags/${identity.tag}^{tag}`]),
@@ -268,7 +229,13 @@ function prepareCheckout({ sourceDir, archivePath, identity }) {
   const submoduleStatus = output('git', [
     '-C', sourceDir, 'submodule', 'status', '--recursive', '--', HERMES_PATH,
   ]);
-  if (!submoduleStatus || submoduleStatus.startsWith('-') || submoduleStatus.startsWith('+')) {
+  const submoduleStatusEntries = submoduleStatus
+    .split(/\r?\n/u)
+    .filter(Boolean);
+  if (
+    submoduleStatusEntries.length === 0
+    || submoduleStatusEntries.some((entry) => entry.startsWith('-') || entry.startsWith('+'))
+  ) {
     fail(`Gplus Hermes submodule is not initialized at the locked commit: ${submoduleStatus || HERMES_PATH}`);
   }
   console.log(`[macos-hermes] verified ${identity.tag}@${identity.commit} and source tree ${actualTree}`);
@@ -277,16 +244,13 @@ function prepareCheckout({ sourceDir, archivePath, identity }) {
 
 async function main() {
   const { sourceDir } = parseArguments(process.argv.slice(2));
-  githubToken();
   const { upstream } = loadHermesLock(sourceDir);
   const identity = readExpectedIdentity(sourceDir, upstream);
   const tempRoot = await mkdtemp(path.join(tmpdir(), 'gplus-hermes-source-'));
   const hermesCheckout = path.join(sourceDir, HERMES_PATH);
   try {
-    const archivePath = await downloadHermesArchive(tempRoot, identity.commit);
-    const listing = output('tar', ['-tzf', archivePath]);
-    validateArchiveListing(listing);
-    prepareCheckout({ sourceDir, archivePath, identity });
+    const sshEnv = prepareSshEnvironment(tempRoot);
+    prepareCheckout({ sourceDir, identity, sshEnv });
   } catch (error) {
     rmSync(hermesCheckout, { recursive: true, force: true });
     throw error;

@@ -44,9 +44,10 @@ GPLUS_SOURCE_READER_APP_ID
 GPLUS_SOURCE_READER_PRIVATE_KEY
 ```
 
-The `staging` and `production` Environments must each contain these nine
+The `staging` and `production` Environments must each contain these ten
 secrets. They are environment-scoped so Production remains behind its existing
-required reviewer rule.
+required reviewer rule. `HERMES_SOURCE_SSH_KEY` is consumed only by Gplus Bot
+Desktop jobs; Libre Reader jobs do not use it.
 
 ```text
 ASC_ISSUER_ID
@@ -58,6 +59,7 @@ MAC_DEVELOPER_ID_SHA1
 QINIU_ACCESS_KEY
 QINIU_SECRET_KEY
 RELEASE_TOKEN
+HERMES_SOURCE_SSH_KEY
 ```
 
 `ASC_KEY_P8_B64` is the base64 encoding of the App Store Connect API key file.
@@ -65,12 +67,13 @@ RELEASE_TOKEN
 Application certificate bundle. The workflow decodes both files into
 `$RUNNER_TEMP`, uses mode `600`, and removes them in an `always()` cleanup step.
 The P12 password, Qiniu credentials, and Release API token are injected only
-into the publishing step. The public Hermes source is downloaded through the
-GitHub API using the short-lived workflow token, then its locked commit, tag
-object, peeled commit, and Git tree are verified before the source checkout is
-used by `release:local`. The source repository's submodule URL is changed only
-in local Git configuration to point at that verified checkout, so the release
-worktree does not make a second network clone.
+into the publishing step. The locked public Hermes tag is fetched over SSH
+through `ssh.github.com:443` with `HERMES_SOURCE_SSH_KEY`; the pinned host
+fingerprint, commit, tag object, peeled commit, Git tree, and clean status are
+verified before the source checkout is used by `release:local`. The source
+repository's submodule URL is changed only in local Git configuration to point
+at that verified checkout, so the release worktree does not make a second
+network clone.
 
 Do not add `MATCH_PASSWORD`, private keys, decoded certificates, or local
 credential files to this repository. The macOS workflow uses the local P12
