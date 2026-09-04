@@ -44,7 +44,7 @@ GPLUS_SOURCE_READER_APP_ID
 GPLUS_SOURCE_READER_PRIVATE_KEY
 ```
 
-The `staging` and `production` Environments must each contain these nine
+The `staging` and `production` Environments must each contain these ten
 secrets. They are environment-scoped so Production remains behind its existing
 required reviewer rule.
 
@@ -58,6 +58,7 @@ MAC_DEVELOPER_ID_SHA1
 QINIU_ACCESS_KEY
 QINIU_SECRET_KEY
 RELEASE_TOKEN
+HERMES_SOURCE_SSH_KEY
 ```
 
 `ASC_KEY_P8_B64` is the base64 encoding of the App Store Connect API key file.
@@ -65,7 +66,11 @@ RELEASE_TOKEN
 Application certificate bundle. The workflow decodes both files into
 `$RUNNER_TEMP`, uses mode `600`, and removes them in an `always()` cleanup step.
 The P12 password, Qiniu credentials, and Release API token are injected only
-into the publishing step.
+into the publishing step. `HERMES_SOURCE_SSH_KEY` is injected only into the
+Gplus Hermes initialization step. It is used with the fixed
+`ssh.github.com:443` ED25519 host fingerprint to avoid GitHub HTTPS abuse
+rate-limits when reading the public Hermes submodule. The temporary SSH key and
+known-hosts file are removed in the final cleanup step.
 
 Do not add `MATCH_PASSWORD`, private keys, decoded certificates, or local
 credential files to this repository. The macOS workflow uses the local P12

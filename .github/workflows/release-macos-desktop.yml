@@ -83,15 +83,15 @@ jobs:
         working-directory: source
         shell: bash
         env:
-          GITHUB_TOKEN: ${{ github.token }}
+          HERMES_SOURCE_SSH_KEY: ${{ secrets.HERMES_SOURCE_SSH_KEY }}
         run: |
           set -euo pipefail
-          : "${GITHUB_TOKEN:?GITHUB_TOKEN is required}"
+          : "${HERMES_SOURCE_SSH_KEY:?HERMES_SOURCE_SSH_KEY is required}"
           export GIT_TERMINAL_PROMPT=0
-          auth_header="$(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
           hermes_path='apps/gplus-bot-desktop/vendor/hermes-agent'
           hermes_checkout="$PWD/$hermes_path"
           hermes_url="$(git config --file .gitmodules --get "submodule.$hermes_path.url")"
+          hermes_ssh_url='git@github.com:NousResearch/hermes-agent.git'
           hermes_tag="$(jq -er '.upstream.tag' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
           expected_hermes_commit="$(git rev-parse "HEAD:$hermes_path")"
           expected_hermes_tag_object="$(jq -er '.upstream.tagObject' apps/gplus-bot-desktop/vendor/hermes-source-lock.json)"
@@ -107,26 +107,40 @@ jobs:
             echo "Invalid Hermes source identity in release commit" >&2
             exit 1
           fi
-          git_with_github_auth() {
+          git submodule sync --recursive
+          ssh_dir="$RUNNER_TEMP/gplus-hermes-ssh"
+          ssh_key_path="$ssh_dir/id_ed25519"
+          known_hosts_path="$ssh_dir/known_hosts"
+          mkdir -p "$ssh_dir"
+          chmod 700 "$ssh_dir"
+          printf '%s\n' "$HERMES_SOURCE_SSH_KEY" > "$ssh_key_path"
+          chmod 600 "$ssh_key_path"
+          ssh-keyscan -T 30 -p 443 -t ed25519 ssh.github.com > "$known_hosts_path" 2>/dev/null
+          test -s "$known_hosts_path"
+          host_fingerprint="$(ssh-keygen -lf "$known_hosts_path" | awk 'NR == 1 { print $2 }')"
+          if [[ "$host_fingerprint" != 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU' ]]; then
+            echo "Unexpected ssh.github.com host key fingerprint: $host_fingerprint" >&2
+            exit 1
+          fi
+          git_ssh_command="ssh -i $ssh_key_path -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$known_hosts_path -o HostName=ssh.github.com -p 443"
+          export GIT_SSH_COMMAND="$git_ssh_command"
+          printf 'GIT_SSH_COMMAND=%s\n' "$git_ssh_command" >> "$GITHUB_ENV"
+          git config --local \
+            url."$hermes_ssh_url".insteadOf \
+            "$hermes_url"
+          git_with_github_ssh() {
             GIT_CONFIG_GLOBAL=/dev/null git \
               -c protocol.version=2 \
-              -c http.version=HTTP/1.1 \
-              -c http.connectTimeout=30 \
-              -c http.lowSpeedLimit=1000 \
-              -c http.lowSpeedTime=30 \
-              -c http.maxRequests=1 \
-              -c "http.https://github.com/.extraheader=AUTHORIZATION: basic $auth_header" \
               "$@"
           }
-          git submodule sync --recursive
           for attempt in 1 2 3 4 5; do
             if [[ -e "$hermes_checkout" ]]; then
               rm -rf -- "$hermes_checkout"
             fi
             if mkdir -p "$(dirname "$hermes_checkout")" \
               && git init --quiet "$hermes_checkout" \
-              && git -C "$hermes_checkout" remote add origin "$hermes_url" \
-              && git_with_github_auth -C "$hermes_checkout" fetch \
+              && git -C "$hermes_checkout" remote add origin "$hermes_ssh_url" \
+              && git_with_github_ssh -C "$hermes_checkout" fetch \
                 --no-tags --depth 1 --filter=blob:none origin \
                 "refs/tags/$hermes_tag:refs/tags/$hermes_tag" \
               && git -C "$hermes_checkout" checkout --quiet --detach "$expected_hermes_commit"; then
@@ -446,8 +460,11 @@ jobs:
         run: |
           set +e
           credential_dir="$RUNNER_TEMP/gplus-macos-release-credentials"
+          ssh_dir="$RUNNER_TEMP/gplus-hermes-ssh"
           rm -f "$credential_dir/AuthKey_"*.p8 "$credential_dir/developer-id-application.p12"
           rmdir "$credential_dir" 2>/dev/null || true
+          rm -f "$ssh_dir/id_ed25519" "$ssh_dir/known_hosts"
+          rmdir "$ssh_dir" 2>/dev/null || true
           if [[ -d source/.git ]]; then
             git -C source config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
             git -C source submodule foreach --recursive \
