@@ -26,19 +26,34 @@ function parseArguments(argv) {
   return { sourceDir: path.resolve(argv[1]) };
 }
 
+export function buildGitAuthEnvironment(token) {
+  const normalizedToken = String(token || '').trim();
+  if (!normalizedToken) fail('GitHub token is required for authenticated Git operations');
+  return {
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.https://github.com/.extraheader',
+    GIT_CONFIG_VALUE_0: `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${normalizedToken}`, 'utf8').toString('base64')}`,
+  };
+}
+
 function run(command, args, { cwd, auth = false, timeoutMs } = {}) {
-  const commandArgs = auth
-    ? ['-c', `http.https://github.com/.extraheader=AUTHORIZATION: basic ${authHeader()}`, ...args]
-    : args;
+  const environment = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: '/dev/null',
+    GIT_TERMINAL_PROMPT: '0',
+  };
+  if (auth) {
+    Object.assign(environment, buildGitAuthEnvironment(githubToken()));
+  } else {
+    delete environment.GIT_CONFIG_COUNT;
+    delete environment.GIT_CONFIG_KEY_0;
+    delete environment.GIT_CONFIG_VALUE_0;
+  }
   try {
-    return execFileSync(command, commandArgs, {
+    return execFileSync(command, args, {
       cwd,
       encoding: 'utf8',
-      env: {
-        ...process.env,
-        GIT_CONFIG_GLOBAL: '/dev/null',
-        GIT_TERMINAL_PROMPT: '0',
-      },
+      env: environment,
       timeout: timeoutMs,
       killSignal: 'SIGTERM',
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -58,10 +73,6 @@ function githubToken() {
   const token = process.env.GITHUB_TOKEN?.trim();
   if (!token) fail('GITHUB_TOKEN is required to fetch the public Hermes source');
   return token;
-}
-
-function authHeader() {
-  return Buffer.from(`x-access-token:${githubToken()}`, 'utf8').toString('base64');
 }
 
 function assertOid(value, label) {
