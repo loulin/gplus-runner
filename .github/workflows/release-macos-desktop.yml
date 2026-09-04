@@ -36,7 +36,7 @@ concurrency:
 jobs:
   release:
     name: Publish macOS Desktop release
-    runs-on: ${{ inputs.target == 'mac-arm64' && 'macos-14' || 'macos-13' }}
+    runs-on: ${{ inputs.target == 'mac-arm64' && 'macos-15' || 'macos-15-intel' }}
     environment: ${{ inputs.profile }}
     timeout-minutes: 360
     env:

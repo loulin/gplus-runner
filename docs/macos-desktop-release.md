@@ -15,8 +15,8 @@ The workflow runs on a matching native host:
 
 | Target | GitHub runner | Node architecture |
 | --- | --- | --- |
-| `mac-arm64` | `macos-14` | `arm64` |
-| `mac-x64` | `macos-13` | `x64` |
+| `mac-arm64` | `macos-15` | `arm64` |
+| `mac-x64` | `macos-15-intel` | `x64` |
 
 Cross-building is rejected. A run performs the following complete path:
 
