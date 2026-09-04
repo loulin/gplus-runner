@@ -1,7 +1,20 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { validateArchiveListing } from './prepare-macos-hermes-source.mjs';
+import {
+  buildGitAuthEnvironment,
+  validateArchiveListing,
+} from './prepare-macos-hermes-source.mjs';
+
+test('passes Git authentication through environment config', () => {
+  const environment = buildGitAuthEnvironment('test-token');
+  assert.equal(environment.GIT_CONFIG_COUNT, '1');
+  assert.equal(environment.GIT_CONFIG_KEY_0, 'http.https://github.com/.extraheader');
+  assert.equal(
+    environment.GIT_CONFIG_VALUE_0,
+    `AUTHORIZATION: basic ${Buffer.from('x-access-token:test-token', 'utf8').toString('base64')}`,
+  );
+});
 
 test('accepts a single-root GitHub source archive listing', () => {
   assert.equal(
