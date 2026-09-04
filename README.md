@@ -63,8 +63,9 @@ credentials. macOS formal publishing uses environment-scoped credentials as
 described below; values must never be committed to this repository or printed
 in workflow output.
 
-The `staging` and `production` Environments must each contain these macOS
-publishing secrets:
+The `staging` and `production` Environments must each contain these release
+secrets. `HERMES_SOURCE_SSH_KEY` is required for Gplus Bot Desktop runs on
+Windows and macOS; Libre Reader runs do not consume it:
 
 ```text
 ASC_ISSUER_ID
@@ -76,6 +77,7 @@ MAC_DEVELOPER_ID_SHA1
 QINIU_ACCESS_KEY
 QINIU_SECRET_KEY
 RELEASE_TOKEN
+HERMES_SOURCE_SSH_KEY
 ```
 
 `production` remains protected by its required reviewer rule. The workflow

@@ -64,7 +64,7 @@ jobs:
         id: source-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          app-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
+          client-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
           private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
           owner: loulin
           repositories: gplus
@@ -99,8 +99,85 @@ jobs:
           # commits during production preparation, so tags must be available
           # even though the checkout itself is pinned to the resolved SHA.
           fetch-depth: 0
-          submodules: recursive
+          # Initialize Hermes in a separate retrying step below so public
+          # GitHub rate limits cannot abort the private source checkout.
+          submodules: false
           persist-credentials: false
+
+      - name: Initialize Hermes submodule with retry
+        if: inputs.application == 'gplus-bot-desktop'
+        working-directory: source
+        shell: pwsh
+        env:
+          HERMES_SOURCE_SSH_KEY: ${{ secrets.HERMES_SOURCE_SSH_KEY }}
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Native Git failures must be handled by the retry loop below.
+          $PSNativeCommandUseErrorActionPreference = $false
+          if ([string]::IsNullOrWhiteSpace($env:HERMES_SOURCE_SSH_KEY)) {
+            throw 'HERMES_SOURCE_SSH_KEY is required'
+          }
+          $hermesPath = 'apps/gplus-bot-desktop/vendor/hermes-agent'
+          $hermesUrl = (git config --file .gitmodules --get "submodule.$hermesPath.url").Trim()
+          $hermesSshUrl = 'git@github.com:NousResearch/hermes-agent.git'
+          $expectedCommit = (git rev-parse "HEAD:$hermesPath").Trim().ToLowerInvariant()
+          if ($hermesUrl -ne 'https://github.com/NousResearch/hermes-agent.git') {
+            throw "Unexpected Hermes submodule URL: $hermesUrl"
+          }
+          if ($expectedCommit -notmatch '^[0-9a-f]{40}$') {
+            throw "Invalid Hermes gitlink in release commit: $expectedCommit"
+          }
+
+          & git submodule sync --recursive
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to synchronize submodule configuration'
+          }
+          $sshDir = Join-Path $env:RUNNER_TEMP 'gplus-hermes-ssh'
+          $sshKeyPath = Join-Path $sshDir 'id_ed25519'
+          $knownHostsPath = Join-Path $sshDir 'known_hosts'
+          New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
+          [IO.File]::WriteAllText($sshKeyPath, $env:HERMES_SOURCE_SSH_KEY)
+          $scanOutput = @(ssh-keyscan.exe -T 30 -p 443 -t ed25519 ssh.github.com 2>$null)
+          if ($LASTEXITCODE -ne 0 -or $scanOutput.Count -eq 0) {
+            throw 'Unable to resolve ssh.github.com host key'
+          }
+          $scanOutput | Set-Content -Path $knownHostsPath -Encoding ascii
+          $hostFingerprint = (ssh-keygen.exe -lf $knownHostsPath | Select-Object -First 1).ToString().Split()[1]
+          if ($hostFingerprint -ne 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU') {
+            throw "Unexpected ssh.github.com host key fingerprint: $hostFingerprint"
+          }
+          $env:GIT_SSH_COMMAND = "ssh -i `"$sshKeyPath`" -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=`"$knownHostsPath`" -o HostName=ssh.github.com -p 443"
+          "GIT_SSH_COMMAND=$env:GIT_SSH_COMMAND" >> $env:GITHUB_ENV
+          & git config --local "submodule.$hermesPath.url" $hermesSshUrl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to configure Hermes SSH URL'
+          }
+
+          for ($attempt = 1; $attempt -le 5; $attempt++) {
+            if (Test-Path -LiteralPath $hermesPath) {
+              Remove-Item -LiteralPath $hermesPath -Recurse -Force
+            }
+            & git submodule update --init --checkout --recursive -- $hermesPath
+            $gitExitCode = $LASTEXITCODE
+            if ($gitExitCode -eq 0) {
+              $actualCommit = (git -C $hermesPath rev-parse HEAD).Trim().ToLowerInvariant()
+              if ($actualCommit -ne $expectedCommit) {
+                throw "Hermes gitlink mismatch: expected $expectedCommit, got $actualCommit"
+              }
+              & git -C $hermesPath remote set-url origin $hermesSshUrl
+              if ($LASTEXITCODE -ne 0) {
+                throw 'Unable to persist Hermes SSH remote'
+              }
+              exit 0
+            }
+            if ($attempt -eq 5) {
+              throw 'Hermes submodule initialization failed after 5 attempts'
+            }
+            $delay = $attempt * 15
+            Write-Host "Hermes submodule initialization failed; retrying in ${delay}s"
+            Start-Sleep -Seconds $delay
+          }
 
       - name: Validate matching Windows target runner
         shell: pwsh
@@ -317,6 +394,8 @@ jobs:
         shell: pwsh
         run: |
           if (Test-Path "$pwd/source/.windows-handoff") { Remove-Item "$pwd/source/.windows-handoff" -Recurse -Force }
+          $sshDir = Join-Path $env:RUNNER_TEMP 'gplus-hermes-ssh'
+          if (Test-Path -LiteralPath $sshDir) { Remove-Item -LiteralPath $sshDir -Recurse -Force }
 
       - name: Save npm download cache
         if: always()

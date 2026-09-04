@@ -61,15 +61,20 @@ sanitized manifest + ciphertext artifact
 Contents: Read-only
 ```
 
-runner 仓库只保存以下两个 Secret 名称对应的值：
+runner 仓库的源码访问使用以下两个 Secret；Gplus Bot Desktop 的 Windows
+任务还需要在所选 Environment 配置 `HERMES_SOURCE_SSH_KEY`：
 
 ```text
 GPLUS_SOURCE_READER_APP_ID
 GPLUS_SOURCE_READER_PRIVATE_KEY
+HERMES_SOURCE_SSH_KEY
 ```
 
-私钥不能从 GitHub 读回，也不能写入本文档、workflow 输出、artifact 或
-提交记录。App 不需要 Issues、Pull requests、Actions、Deployments、Packages
+`HERMES_SOURCE_SSH_KEY` 是只读访问公开 Hermes 仓库的临时 SSH 私钥。workflow
+通过固定的 `ssh.github.com:443` ED25519 host key 读取锁定的 Hermes
+submodule，以避开 GitHub HTTPS 429 限流；只写入 runner 临时目录，并在
+`always()` cleanup 中删除。私钥不能从 GitHub 读回，也不能写入本文档、
+workflow 输出、artifact 或提交记录。App 不需要 Issues、Pull requests、Actions、Deployments、Packages
 或 Administration 权限。
 
 ## 3. 当前统一 Workflow
@@ -96,7 +101,8 @@ public runner workflow 的分支，不是应用源码分支。
 1. checkout `gplus-runner`，并关闭 credential persistence。
 2. 使用 `actions/create-github-app-token` 创建只读、短生命周期的源码 token。
 3. 通过 GitHub API 把 `source_ref` 解析为完整 `source_sha`，再按 SHA checkout
-   `loulin/gplus`，初始化 submodule，获取全部 Tag，并关闭 credential persistence。
+   `loulin/gplus`，通过独立的 SSH 重试步骤初始化 Hermes submodule，获取全部
+   Tag，并关闭 credential persistence。
 4. 检查 target 与当前 Windows/Node 架构匹配；当前 hosted runner 只启用 `win-x64`，
    arm64/ia32 明确失败，不做交叉构建。
 5. 配置 npm、uv、Electron 和 Electron Builder 下载缓存，安装固定版本的 Node、Python、
