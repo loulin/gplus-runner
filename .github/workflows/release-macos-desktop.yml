@@ -294,14 +294,12 @@ jobs:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_KEY_P8_B64: ${{ secrets.ASC_KEY_P8_B64 }}
           MAC_DEVELOPER_ID_P12_B64: ${{ secrets.MAC_DEVELOPER_ID_P12_B64 }}
-          MAC_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MAC_DEVELOPER_ID_P12_PASSWORD }}
         run: |
           set -euo pipefail
           : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
           : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
           : "${ASC_KEY_P8_B64:?ASC_KEY_P8_B64 is required}"
           : "${MAC_DEVELOPER_ID_P12_B64:?MAC_DEVELOPER_ID_P12_B64 is required}"
-          : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
           if [[ ! "$ASC_KEY_ID" =~ ^[A-Za-z0-9]+$ ]]; then
             echo 'ASC_KEY_ID contains unsupported path characters' >&2
             exit 1
@@ -324,7 +322,6 @@ jobs:
           test -s "$asc_key_path"
           test -s "$p12_path"
           openssl pkey -in "$asc_key_path" -noout
-          openssl pkcs12 -in "$p12_path" -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
           {
             printf 'ASC_KEY_PATH=%s\n' "$asc_key_path"
             printf 'MAC_DEVELOPER_ID_P12_PATH=%s\n' "$p12_path"
@@ -349,11 +346,15 @@ jobs:
           set -euo pipefail
           : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"
           : "${ASC_KEY_ID:?ASC_KEY_ID is required}"
+          : "${ASC_KEY_PATH:?ASC_KEY_PATH is required}"
           : "${MAC_DEVELOPER_ID_P12_PASSWORD:?MAC_DEVELOPER_ID_P12_PASSWORD is required}"
+          : "${MAC_DEVELOPER_ID_P12_PATH:?MAC_DEVELOPER_ID_P12_PATH is required}"
           : "${MAC_DEVELOPER_ID_SHA1:?MAC_DEVELOPER_ID_SHA1 is required}"
           : "${QINIU_ACCESS_KEY:?QINIU_ACCESS_KEY is required}"
           : "${QINIU_SECRET_KEY:?QINIU_SECRET_KEY is required}"
           : "${RELEASE_TOKEN:?RELEASE_TOKEN is required}"
+          openssl pkcs12 -in "$MAC_DEVELOPER_ID_P12_PATH" \
+            -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
           if [[ "$APPLICATION" == 'gplus-bot-desktop' ]]; then
             export GPLUS_DESKTOP_CREDENTIALS_ACTIVE=1
             npm --prefix apps/gplus-bot-desktop run release:local -- \
