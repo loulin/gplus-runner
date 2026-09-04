@@ -64,8 +64,7 @@ described below; values must never be committed to this repository or printed
 in workflow output.
 
 The `staging` and `production` Environments must each contain these release
-secrets. `HERMES_SOURCE_SSH_KEY` is required for Gplus Bot Desktop runs on
-Windows and macOS; Libre Reader runs do not consume it:
+secrets:
 
 ```text
 ASC_ISSUER_ID
@@ -77,13 +76,14 @@ MAC_DEVELOPER_ID_SHA1
 QINIU_ACCESS_KEY
 QINIU_SECRET_KEY
 RELEASE_TOKEN
-HERMES_SOURCE_SSH_KEY
 ```
 
 `production` remains protected by its required reviewer rule. The workflow
 decodes the P8 and P12 material only into the ephemeral macOS runner, signs and
 notarizes the package, publishes through the source release adapter, and
-removes the files in an `always()` cleanup step.
+removes the files in an `always()` cleanup step. Gplus Bot Desktop's public
+Hermes source is fetched with the short-lived workflow token and verified
+against its locked annotated tag and Git tree; no Hermes SSH secret is required.
 
 Configure this repository variable before starting a build:
 
