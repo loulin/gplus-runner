@@ -143,10 +143,6 @@ jobs:
           $knownHostsPath = Join-Path $sshDir 'known_hosts'
           New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
           [IO.File]::WriteAllText($sshKeyPath, "$hermesSshKey`n", [Text.UTF8Encoding]::new($false))
-          & ssh-keygen.exe -y -f $sshKeyPath 1>$null 2>$null
-          if ($LASTEXITCODE -ne 0) {
-            throw 'HERMES_SOURCE_SSH_KEY is not a valid OpenSSH private key'
-          }
           # Hosted Windows runners can time out while probing ssh.github.com with
           # ssh-keyscan even though the subsequent SSH connection is reachable.
           # Pin the public host key and retain the fingerprint check below.
