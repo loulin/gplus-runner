@@ -326,6 +326,9 @@ jobs:
             -passin env:MAC_DEVELOPER_ID_P12_PASSWORD -noout
           if [[ "$APPLICATION" == 'gplus-bot-desktop' ]]; then
             export GPLUS_DESKTOP_CREDENTIALS_ACTIVE=1
+            # The release adapter performs Developer ID and notarization before
+            # it publishes the production update feed.
+            export GPLUS_DESKTOP_MAC_SIGNATURE_VERIFIED=1
             npm --prefix apps/gplus-bot-desktop run release:local -- \
               --tag "$TAG" \
               --target "$TARGET" \
