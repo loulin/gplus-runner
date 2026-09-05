@@ -139,6 +139,11 @@ jobs:
           $knownHostsPath = Join-Path $sshDir 'known_hosts'
           New-Item -ItemType Directory -Path $sshDir -Force | Out-Null
           [IO.File]::WriteAllText($sshKeyPath, "$hermesSshKey`n", [Text.UTF8Encoding]::new($false))
+          $keyLines = @($hermesSshKey -split "`n", -1)
+          $hasOpenSshHeader = $hermesSshKey.StartsWith('-----BEGIN OPENSSH PRIVATE KEY-----')
+          $hasRsaHeader = $hermesSshKey.StartsWith('-----BEGIN RSA PRIVATE KEY-----')
+          $hasPrivateKeyFooter = $hermesSshKey.EndsWith('-----END OPENSSH PRIVATE KEY-----') -or $hermesSshKey.EndsWith('-----END RSA PRIVATE KEY-----')
+          Write-Host "Hermes SSH key shape: length=$($hermesSshKey.Length), lines=$($keyLines.Count), openSshHeader=$hasOpenSshHeader, rsaHeader=$hasRsaHeader, privateKeyFooter=$hasPrivateKeyFooter, literalBackslashN=$($hermesSshKey.Contains('\n'))"
           & ssh-keygen.exe -y -f $sshKeyPath 1>$null 2>$null
           if ($LASTEXITCODE -ne 0) {
             throw 'HERMES_SOURCE_SSH_KEY is not a valid OpenSSH private key'
