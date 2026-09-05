@@ -66,6 +66,9 @@ HERMES_SOURCE_SSH_KEY
 `MAC_DEVELOPER_ID_P12_B64` is the base64 encoding of the Developer ID
 Application certificate bundle. The workflow decodes both files into
 `$RUNNER_TEMP`, uses mode `600`, and removes them in an `always()` cleanup step.
+`HERMES_SOURCE_SSH_KEY` must be the base64 encoding of the temporary SSH private
+key; the workflow decodes and validates it in the temporary source directory so
+multiline key data survives GitHub Actions environment transport.
 The P12 password, Qiniu credentials, and Release API token are injected only
 into the publishing step. The locked public Hermes tag is fetched over SSH
 through `ssh.github.com:443` with `HERMES_SOURCE_SSH_KEY`; the pinned host

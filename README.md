@@ -83,13 +83,14 @@ HERMES_SOURCE_SSH_KEY
 ```
 
 `production` remains protected by its required reviewer rule. The workflow
-decodes the P8 and P12 material only into the ephemeral macOS runner, signs and
-notarizes the package, publishes through the source release adapter, and
-removes the files in an `always()` cleanup step. Gplus Bot Desktop's public
-Hermes source is fetched over `ssh.github.com:443` with the
-environment-scoped `HERMES_SOURCE_SSH_KEY` and verified against its locked
-annotated tag and Git tree. The key is used only by Gplus Bot Desktop release
-jobs.
+decodes the P8, P12, and Hermes SSH key material only into the ephemeral
+runner, signs and notarizes the package, publishes through the source release
+adapter, and removes the files in an `always()` cleanup step. Store
+`HERMES_SOURCE_SSH_KEY` as base64-encoded private-key bytes so the multiline key
+survives GitHub Actions environment transport. Gplus Bot Desktop's public
+Hermes source is fetched over `ssh.github.com:443` with the environment-scoped
+key and verified against its locked annotated tag and Git tree. The key is used
+only by Gplus Bot Desktop release jobs.
 
 Configure this repository variable before starting a build:
 

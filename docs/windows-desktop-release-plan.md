@@ -70,10 +70,12 @@ GPLUS_SOURCE_READER_PRIVATE_KEY
 HERMES_SOURCE_SSH_KEY
 ```
 
-`HERMES_SOURCE_SSH_KEY` 是只读访问公开 Hermes 仓库的临时 SSH 私钥。workflow
-通过固定的 `ssh.github.com:443` ED25519 host key 读取锁定的 Hermes
-submodule，以避开 GitHub HTTPS 429 限流；只写入 runner 临时目录，并在
-`always()` cleanup 中删除。私钥不能从 GitHub 读回，也不能写入本文档、
+`HERMES_SOURCE_SSH_KEY` 是只读访问公开 Hermes 仓库的临时 SSH 私钥的
+Base64 编码。使用单行编码是为了避免多行私钥在 GitHub Actions 环境变量传输
+时折叠；workflow 只在 runner 临时目录解码并校验。workflow 通过固定的
+`ssh.github.com:443` ED25519 host key 读取锁定的 Hermes submodule，以避开
+GitHub HTTPS 429 限流；只写入 runner 临时目录，并在 `always()` cleanup 中删除。
+私钥不能从 GitHub 读回，也不能写入本文档、
 workflow 输出、artifact 或提交记录。App 不需要 Issues、Pull requests、Actions、Deployments、Packages
 或 Administration 权限。
 
