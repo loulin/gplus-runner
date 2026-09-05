@@ -92,19 +92,19 @@ jobs:
           set -euo pipefail
           node scripts/prepare-macos-hermes-source.mjs --source-dir source
 
-      - name: Setup packaging Python
+      - name: Setup uv
         if: inputs.application == 'gplus-bot-desktop'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
-          python-version: '3.13'
-          architecture: ${{ inputs.target == 'mac-arm64' && 'arm64' || 'x64' }}
+          enable-cache: false
 
-      - name: Pin packaging Python runtime
+      - name: Install relocatable packaging Python
         if: inputs.application == 'gplus-bot-desktop'
         shell: bash
         run: |
           set -euo pipefail
-          packaging_python="$(python3 -c 'import sys; print(sys.executable)')"
+          uv python install 3.13
+          packaging_python="$(uv python find 3.13 --no-project --managed-python --no-python-downloads)"
           packaging_version="$("$packaging_python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
           case "$packaging_version" in
             3.11.*|3.12.*|3.13.*)
@@ -121,13 +121,7 @@ jobs:
             exit 1
           fi
           printf 'GPLUS_OFFLINE_PYTHON=%s\n' "$packaging_python" >> "$GITHUB_ENV"
-          echo "Pinned packaging Python $packaging_version ($actual_machine)"
-
-      - name: Setup uv
-        if: inputs.application == 'gplus-bot-desktop'
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        with:
-          enable-cache: false
+          echo "Pinned uv-managed packaging Python $packaging_version ($actual_machine): $packaging_python"
 
       - name: Setup Fastlane Ruby
         if: inputs.application == 'gplus-bot-desktop'
