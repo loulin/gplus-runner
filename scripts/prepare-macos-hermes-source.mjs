@@ -55,8 +55,17 @@ function output(command, args, options) {
 }
 
 function hermesSshKey() {
-  const key = process.env.HERMES_SOURCE_SSH_KEY?.trim();
-  if (!key) fail('HERMES_SOURCE_SSH_KEY is required to fetch the public Hermes source');
+  const encodedKey = process.env.HERMES_SOURCE_SSH_KEY?.trim();
+  if (!encodedKey) fail('HERMES_SOURCE_SSH_KEY is required to fetch the public Hermes source');
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encodedKey)) {
+    fail('HERMES_SOURCE_SSH_KEY must be a base64-encoded OpenSSH private key');
+  }
+  const key = Buffer.from(encodedKey, 'base64').toString('utf8')
+    .trim()
+    .replace(/\r\n?/gu, '\n');
+  if (!key.startsWith('-----BEGIN OPENSSH PRIVATE KEY-----') && !key.startsWith('-----BEGIN RSA PRIVATE KEY-----')) {
+    fail('HERMES_SOURCE_SSH_KEY does not decode to an OpenSSH private key');
+  }
   return key;
 }
 
@@ -122,6 +131,7 @@ function prepareSshEnvironment(tempRoot) {
   const sshKeyPath = path.join(tempRoot, 'id_ed25519');
   const knownHostsPath = path.join(tempRoot, 'known_hosts');
   writeFileSync(sshKeyPath, `${hermesSshKey()}\n`, { encoding: 'utf8', mode: 0o600 });
+  run('ssh-keygen', ['-y', '-f', sshKeyPath]);
   const knownHosts = run('ssh-keyscan', [
     '-T', '30', '-p', '443', '-t', 'ed25519', 'ssh.github.com',
   ], { timeoutMs: GIT_FETCH_TIMEOUT_MS });
