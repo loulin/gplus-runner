@@ -54,19 +54,26 @@ function output(command, args, options) {
   return String(run(command, args, options)).trim();
 }
 
-function hermesSshKey() {
-  const encodedKey = process.env.HERMES_SOURCE_SSH_KEY?.trim();
-  if (!encodedKey) fail('HERMES_SOURCE_SSH_KEY is required to fetch the public Hermes source');
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encodedKey)) {
-    fail('HERMES_SOURCE_SSH_KEY must be a base64-encoded OpenSSH private key');
+export function parseHermesSshKey(rawValue = process.env.HERMES_SOURCE_SSH_KEY) {
+  const trimmed = rawValue?.trim();
+  if (!trimmed) fail('HERMES_SOURCE_SSH_KEY is required to fetch the public Hermes source');
+  if (trimmed.startsWith('-----BEGIN OPENSSH PRIVATE KEY-----') || trimmed.startsWith('-----BEGIN RSA PRIVATE KEY-----')) {
+    return trimmed.replace(/\r\n?/gu, '\n');
   }
-  const key = Buffer.from(encodedKey, 'base64').toString('utf8')
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(trimmed)) {
+    fail('HERMES_SOURCE_SSH_KEY must be a raw or base64-encoded OpenSSH private key');
+  }
+  const key = Buffer.from(trimmed, 'base64').toString('utf8')
     .trim()
     .replace(/\r\n?/gu, '\n');
   if (!key.startsWith('-----BEGIN OPENSSH PRIVATE KEY-----') && !key.startsWith('-----BEGIN RSA PRIVATE KEY-----')) {
     fail('HERMES_SOURCE_SSH_KEY does not decode to an OpenSSH private key');
   }
   return key;
+}
+
+function hermesSshKey() {
+  return parseHermesSshKey();
 }
 
 function assertOid(value, label) {
