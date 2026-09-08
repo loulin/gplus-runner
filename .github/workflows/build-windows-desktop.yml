@@ -307,7 +307,7 @@ jobs:
           & $uvPath --version
 
       - name: Fetch locked Hermes release tag
-        if: inputs.application == 'gplus-bot-desktop'
+        if: inputs.application == 'gplus-bot-desktop' && inputs.delivery_mode != 'digest'
         shell: pwsh
         working-directory: source
         run: |
