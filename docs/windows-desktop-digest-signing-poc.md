@@ -21,7 +21,7 @@ GitHub Windows Job 保留构建目录和 .p7u
 
 ## 前置条件
 
-- Windows 签名机已登录 SimplySign Desktop，且 `WIN_CSC_SUBJECT_NAME` 可定位目标证书。
+- Windows 签名机已登录 SimplySign Desktop，且能从证书管理器取得目标证书的 40 位 SHA-1 指纹。
 - Windows SDK `signtool.exe`、PowerShell 7 (`pwsh`) 和 GitHub CLI `gh` 可用。
 - GitHub CLI 已认证，或设置一个仅有 `Actions: Read` 的
   `GH_RELEASE_ARTIFACT_TOKEN`。令牌不写入脚本、收据或日志。
@@ -69,20 +69,20 @@ signed-response-<exchange-id>.zip
   signed/<file-id>/file.dig.signed
 ```
 
-response manifest 回填 request manifest 的 SHA-256、exchange ID、subject、完成时间和
-每个 signed digest 的 SHA-256。云端必须在下载后再校验这些字段，并只在验证通过后
-将 `.dig.signed` 与保留的同目录 `.p7u` 一起交给 `/di`。
+response manifest 回填 request manifest 的 SHA-256、exchange ID、证书 SHA-1、完成时间和
+每个 signed digest 的 SHA-256。`/ds` 阶段不请求时间戳，云端必须在下载后再校验这些字段，
+将 `.dig.signed` 与保留的同目录 `.p7u` 一起交给 `/di`，然后对最终 PE 单独执行
+`signtool timestamp /tr http://time.certum.pl /td SHA256`。
 
 ## 本地运行
 
 先用一个 round 验证本地 `/ds` 与 artifact 协议，不上传 callback：
 
 ```powershell
-$env:WIN_CSC_SUBJECT_NAME = '<Certum subject>'
 pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
   -RunId <run-id> `
   -Profile staging `
-  -CertificateSubjectName $env:WIN_CSC_SUBJECT_NAME `
+  -CertificateSha1 '<40 位证书 SHA-1 指纹>' `
   -ExpectedRounds 1 `
   -SkipCallbackUpload
 ```
@@ -100,7 +100,7 @@ artifact；两轮都完成后才退出：
 pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
   -RunId <run-id> `
   -Profile staging `
-  -CertificateSubjectName $env:WIN_CSC_SUBJECT_NAME `
+  -CertificateSha1 '<40 位证书 SHA-1 指纹>' `
   -ExpectedRounds 2
 ```
 
@@ -110,8 +110,9 @@ pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
 
 ## POC 次序和停止条件
 
-1. P0：使用不含应用代码的临时 unsigned PE，实测 `/dg -> /ds -> /di`，再用
-   `signtool verify` 与 `Get-AuthenticodeSignature` 确认 `Valid`。
+1. P0：使用不含应用代码的临时 unsigned PE，实测 `/dg -> /ds -> /di`；`/ds`
+   使用 `/sha1`，`/di` 后单独执行 `signtool timestamp /tr http://time.certum.pl /td SHA256`，
+   再用 `signtool verify` 与 `Get-AuthenticodeSignature` 确认 `Valid`。
 2. P1：Gplus Bot Desktop staging `win-x64` 完成两轮摘要、已签 ZIP/NSIS、独立
    blockmap、`latest.yml` 和 release receipt，但不发布。
 3. P2：再接入云端的 Qiniu upload 和 Release API，完成一次 staging 发布后才讨论

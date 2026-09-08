@@ -2,7 +2,7 @@
 param(
   [Parameter(Mandatory = $true)][ValidateRange(1, [long]::MaxValue)][long] $RunId,
   [Parameter(Mandatory = $true)][ValidateSet('staging', 'production')][string] $Profile,
-  [Parameter(Mandatory = $true)][string] $CertificateSubjectName,
+  [Parameter(Mandatory = $true)][string] $CertificateSha1,
   [string] $Repository = 'loulin/gplus-runner',
   [string] $GithubToken = $env:GH_RELEASE_ARTIFACT_TOKEN,
   [string] $ResponseDirectory = (Join-Path $env:USERPROFILE '.gplus\gplus-desktop-digest-responses'),
@@ -107,15 +107,14 @@ function Download-RequestArtifact {
 function Invoke-SignedDigest {
   param(
     [Parameter(Mandatory = $true)][string] $ToolPath,
-    [Parameter(Mandatory = $true)][string] $SubjectName,
-    [Parameter(Mandatory = $true)][string] $TimestampServer,
+    [Parameter(Mandatory = $true)][string] $CertificateThumbprint,
     [Parameter(Mandatory = $true)][string] $DigestPath,
     [Parameter(Mandatory = $true)][int] $Attempts
   )
   $signedPath = "$DigestPath.signed"
   if (Test-Path -LiteralPath $signedPath -PathType Leaf) { Remove-Item -LiteralPath $signedPath -Force }
   for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-    & $ToolPath sign /ds /n $SubjectName /fd SHA256 /tr $TimestampServer /td SHA256 $DigestPath
+    & $ToolPath sign /ds /sha1 $CertificateThumbprint /fd SHA256 $DigestPath
     if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $signedPath -PathType Leaf) -and (Get-Item -LiteralPath $signedPath).Length -gt 0) {
       return $signedPath
     }
@@ -164,7 +163,8 @@ function Test-CompletedRound {
   return [bool] $receipt.callbackUploaded
 }
 
-$subject = Require-NonEmptyString $CertificateSubjectName 'CertificateSubjectName'
+$certificateSha1 = Require-NonEmptyString $CertificateSha1 'CertificateSha1'
+if ($certificateSha1 -notmatch '^[0-9a-fA-F]{40}$') { throw 'CertificateSha1 must be a 40-character hexadecimal thumbprint' }
 $token = Get-GithubToken $GithubToken
 $headers = @{ Authorization = "Bearer $token"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
 if ([string]::IsNullOrWhiteSpace($SignToolPath)) {
@@ -210,7 +210,6 @@ for ($round = 1; $round -le $ExpectedRounds; $round++) {
     }
     if ([DateTimeOffset]::Parse([string]$request.expiresAt).ToUniversalTime() -le [DateTimeOffset]::UtcNow) { throw 'Signing request has expired' }
     if ([string]$request.hashAlgorithm -cne 'SHA256') { throw 'Signing request hash algorithm must be SHA256' }
-    $timestampServer = Require-NonEmptyString $request.timestampServer 'signing request timestampServer'
     $provenance = $request.provenance
     $sourceSha = Require-NonEmptyString (Get-RequiredProperty $provenance 'sourceSha' 'request provenance') 'request provenance sourceSha'
     if ($sourceSha -notmatch '^[0-9a-f]{40}$') { throw 'Request provenance sourceSha must be a full lower-case SHA' }
@@ -242,7 +241,7 @@ for ($round = 1; $round -le $ExpectedRounds; $round++) {
       $digest = Get-FileDescriptor -Path $digestPath
       $expectedDigestHash = Require-NonEmptyString (Get-RequiredProperty $record 'digSha256' "signing request file $index") "signing request file $index digSha256"
       if ($digest.sha256 -cne $expectedDigestHash.ToLowerInvariant()) { throw "Signing request digest $index SHA-256 mismatch" }
-      $signedDigest = Invoke-SignedDigest -ToolPath $SignToolPath -SubjectName $subject -TimestampServer $timestampServer -DigestPath $digestPath -Attempts $SigningAttempts
+      $signedDigest = Invoke-SignedDigest -ToolPath $SignToolPath -CertificateThumbprint $certificateSha1 -DigestPath $digestPath -Attempts $SigningAttempts
       $signedRelativePath = "signed/$fileId/file.dig.signed"
       $signedPath = Join-Path $responseRootForRound $signedRelativePath
       New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($signedPath)) -Force | Out-Null
@@ -261,8 +260,8 @@ for ($round = 1; $round -le $ExpectedRounds; $round++) {
       exchangeId = [string]$request.exchangeId
       requestManifestSha256 = (Get-FileDescriptor -Path $manifestPath).sha256
       completedAt = [DateTimeOffset]::UtcNow.ToString('o')
-      signedBySubject = $subject
-      timestampApplied = $true
+      signingCertificateSha1 = $certificateSha1.ToUpperInvariant()
+      timestampApplied = $false
       files = $signedFiles
     }
     $responseManifest = Join-Path $responseRootForRound 'response-manifest.json'
