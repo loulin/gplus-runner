@@ -480,11 +480,11 @@ jobs:
           compression-level: 9
           retention-days: 1
 
-      - name: Wait for local digest response
+      - name: Record digest request handoff
         if: inputs.delivery_mode == 'digest'
         shell: pwsh
         run: |
-          throw 'Digest request uploaded. Callback wait and /di ingestion are not implemented yet; stop here for P1 protocol validation.'
+          @('### Windows digest request', '', "- Artifact: digest-request-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-round-1", '- Status: request uploaded; local /ds validation can proceed', '- Callback: not enabled in this P1 transport step') | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Save npm download cache
         if: always()
