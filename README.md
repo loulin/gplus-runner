@@ -28,6 +28,12 @@ documents; the application source remains private.
 The complete process and the remaining implementation work are in
 [`docs/windows-desktop-release-plan.md`](docs/windows-desktop-release-plan.md).
 
+[`docs/windows-desktop-digest-signing-poc.md`](docs/windows-desktop-digest-signing-poc.md)
+defines an unintegrated Certum SimplySign digest-signing POC. It is deliberately
+kept outside the current release workflow until a real `/dg -> /ds -> /di`
+closure, signed-package immutability, and post-signing blockmap generation have
+all been verified.
+
 `macOS Desktop Release` is the formal signed publishing workflow. It supports
 both applications, `staging` and `production`, and native `mac-arm64` and
 `mac-x64` runners. The complete setup and operating procedure are in

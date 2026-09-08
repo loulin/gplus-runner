@@ -32,6 +32,12 @@ on:
         default: age
         type: choice
         options: [age, none]
+      delivery_mode:
+        description: Build a full handoff or prepare a digest signing request
+        required: true
+        default: handoff
+        type: choice
+        options: [handoff, digest]
 
 permissions:
   contents: read
@@ -54,6 +60,7 @@ jobs:
       TARGET: ${{ inputs.target }}
       SOURCE_REF: ${{ inputs.source_ref }}
       HANDOFF_ENCRYPTION: ${{ inputs.handoff_encryption }}
+      DELIVERY_MODE: ${{ inputs.delivery_mode }}
     steps:
       - name: Checkout runner repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -118,10 +125,16 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:HERMES_SOURCE_SSH_KEY)) {
             throw 'HERMES_SOURCE_SSH_KEY is required'
           }
-          try {
-            $hermesSshKey = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:HERMES_SOURCE_SSH_KEY.Trim())).Trim().Replace("`r`n", "`n").Replace("`r", "`n")
-          } catch {
-            throw 'HERMES_SOURCE_SSH_KEY must be a base64-encoded OpenSSH private key'
+          $hermesSshKey = $env:HERMES_SOURCE_SSH_KEY.Trim().Replace("`r`n", "`n").Replace("`r", "`n")
+          if ($hermesSshKey -notmatch '-----BEGIN [A-Z0-9 ]+ PRIVATE KEY-----') {
+            try {
+              $hermesSshKey = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($hermesSshKey)).Trim().Replace("`r`n", "`n").Replace("`r", "`n")
+            } catch {
+              throw 'HERMES_SOURCE_SSH_KEY must be a raw or base64-encoded OpenSSH private key'
+            }
+          }
+          if ($hermesSshKey -notmatch '-----BEGIN [A-Z0-9 ]+ PRIVATE KEY-----') {
+            throw 'HERMES_SOURCE_SSH_KEY does not contain a recognized private key header'
           }
           $hermesPath = 'apps/gplus-bot-desktop/vendor/hermes-agent'
           $hermesUrl = (git config --file .gitmodules --get "submodule.$hermesPath.url").Trim()
@@ -352,6 +365,7 @@ jobs:
           corepack pnpm --filter $package run release:prepare-handoff --profile $env:PROFILE --target $env:TARGET --source-ref $env:SOURCE_REF --source-sha $env:SOURCE_SHA --workflow-run-id $env:GITHUB_RUN_ID --output $output
 
       - name: Package handoff
+        if: inputs.delivery_mode == 'handoff'
         shell: pwsh
         id: package
         env:
@@ -375,6 +389,7 @@ jobs:
           "HANDOFF_FILE=$($handoffFile[0].Name)" >> $env:GITHUB_OUTPUT
 
       - name: Upload handoff artifact
+        if: inputs.delivery_mode == 'handoff'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.target }}-handoff-${{ github.run_id }}
@@ -386,6 +401,7 @@ jobs:
           retention-days: ${{ inputs.handoff_encryption == 'none' && 1 || 7 }}
 
       - name: Write build summary
+        if: inputs.delivery_mode == 'handoff'
         shell: pwsh
         run: |
           $manifest = Get-Content -Raw "$pwd/handoff-output/ciphertext-manifest.json" | ConvertFrom-Json
@@ -401,6 +417,80 @@ jobs:
           if (Test-Path "$pwd/source/.windows-handoff") { Remove-Item "$pwd/source/.windows-handoff" -Recurse -Force }
           $sshDir = Join-Path $env:RUNNER_TEMP 'gplus-hermes-ssh'
           if (Test-Path -LiteralPath $sshDir) { Remove-Item -LiteralPath $sshDir -Recurse -Force }
+
+      - name: Create digest signing request
+        if: inputs.delivery_mode == 'digest'
+        shell: pwsh
+        working-directory: source
+        env:
+          SIGNTOOL_PATH: C:\Program Files\Microsoft SDKs\Windows\v10.0\bin\x64\signtool.exe
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:APPLICATION -ne 'gplus-bot-desktop' -or $env:PROFILE -ne 'staging' -or $env:TARGET -ne 'win-x64') {
+            throw 'Digest mode is initially enabled only for gplus-bot-desktop staging win-x64'
+          }
+          $unpacked = Get-ChildItem -LiteralPath "$pwd/.generated/gplus-bot-desktop-win-x64/apps/desktop/release" -Directory -Filter 'win-unpacked' -Recurse | Select-Object -First 1
+          if (-not $unpacked) { $unpacked = Get-ChildItem -LiteralPath "$pwd/.windows-handoff" -Directory -Filter 'win-unpacked' -Recurse | Select-Object -First 1 }
+          if (-not $unpacked) { throw 'win-unpacked was not produced by prepare adapter' }
+          $tool = $env:SIGNTOOL_PATH
+          if (-not (Test-Path -LiteralPath $tool -PathType Leaf)) { $tool = (Get-Command signtool.exe -ErrorAction Stop).Source }
+          $root = Join-Path $env:RUNNER_TEMP "gplus-digest-round-1-$env:GITHUB_RUN_ID"
+          $digestRoot = Join-Path $root 'digests'
+          New-Item -ItemType Directory -Path $digestRoot -Force | Out-Null
+          $records = @()
+          $index = 0
+          foreach ($exe in @(Get-ChildItem -LiteralPath $unpacked.FullName -Recurse -File -Filter '*.exe')) {
+            $index++
+            $fileId = ('file-{0:d5}' -f $index)
+            $dir = Join-Path $digestRoot $fileId
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            & $tool sign /dg $dir /fd SHA256 $exe.FullName
+            if ($LASTEXITCODE -ne 0) { throw "signtool /dg failed for $($exe.FullName)" }
+            $dig = Join-Path $dir ($exe.Name + '.dig')
+            $p7u = Join-Path $dir ($exe.Name + '.p7u')
+            if (-not (Test-Path $dig) -or -not (Test-Path $p7u)) { throw "Missing digest pair for $($exe.FullName)" }
+            $records += [ordered]@{
+              fileId = $fileId
+              relativePath = [IO.Path]::GetRelativePath($unpacked.FullName, $exe.FullName).Replace('\','/')
+              digRelativePath = "digests/$fileId/$($exe.Name).dig"
+              digSha256 = (Get-FileHash $dig -Algorithm SHA256).Hash.ToLowerInvariant()
+              p7uSha256 = (Get-FileHash $p7u -Algorithm SHA256).Hash.ToLowerInvariant()
+              originalSha256 = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            }
+          }
+          if ($records.Count -eq 0) { throw 'No executable files found in win-unpacked' }
+          $exchangeId = [guid]::NewGuid().ToString()
+          $manifest = [ordered]@{
+            schemaVersion = 1; kind = 'gplus-windows-digest-request'; exchangeId = $exchangeId;
+            createdAt = [DateTimeOffset]::UtcNow.ToString('o'); expiresAt = [DateTimeOffset]::UtcNow.AddMinutes(30).ToString('o')
+            app = $env:APPLICATION; profile = $env:PROFILE; channel = 'staging'; target = $env:TARGET
+            version = 'unknown'; buildNumber = 0; workflowRunId = [long]$env:GITHUB_RUN_ID; workflowRunAttempt = [int]$env:GITHUB_RUN_ATTEMPT
+            workflowRevision = $env:GITHUB_SHA; round = 1; roundLabel = 'app-executables'; hashAlgorithm = 'SHA256'; timestampServer = 'http://time.certum.pl';
+            provenance = [ordered]@{ sourceRef = $env:SOURCE_REF; sourceSha = $env:SOURCE_SHA }
+            callback = [ordered]@{ uploadUrl = 'https://upload.qiniup.com'; objectKey = "signing-callbacks/staging/win-x64/$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT/round-1-$exchangeId.zip"; uploadToken = 'PENDING-CLOUD-CALLBACK-TOKEN'; maxResponseBytes = 1048576 }
+            files = $records
+          }
+          $out = Join-Path $env:RUNNER_TEMP 'digest-request-output'
+          New-Item -ItemType Directory -Path "$out/digests" -Force | Out-Null
+          Copy-Item "$digestRoot/*" "$out/digests" -Recurse -Force
+          $manifest | ConvertTo-Json -Depth 12 | Set-Content "$out/request-manifest.json" -Encoding utf8
+          "DIGEST_REQUEST_OUT=$out" >> $env:GITHUB_ENV
+
+      - name: Upload digest signing request
+        if: inputs.delivery_mode == 'digest'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: digest-request-${{ github.run_id }}-${{ github.run_attempt }}-round-1
+          path: ${{ runner.temp }}/digest-request-output
+          if-no-files-found: error
+          compression-level: 9
+          retention-days: 1
+
+      - name: Record digest request handoff
+        if: inputs.delivery_mode == 'digest'
+        shell: pwsh
+        run: |
+          @('### Windows digest request', '', "- Artifact: digest-request-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-round-1", '- Status: request uploaded; local /ds validation can proceed', '- Callback: not enabled in this P1 transport step') | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
       - name: Save npm download cache
         if: always()
