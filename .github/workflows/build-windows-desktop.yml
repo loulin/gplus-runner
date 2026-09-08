@@ -125,10 +125,16 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:HERMES_SOURCE_SSH_KEY)) {
             throw 'HERMES_SOURCE_SSH_KEY is required'
           }
-          try {
-            $hermesSshKey = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:HERMES_SOURCE_SSH_KEY.Trim())).Trim().Replace("`r`n", "`n").Replace("`r", "`n")
-          } catch {
-            throw 'HERMES_SOURCE_SSH_KEY must be a base64-encoded OpenSSH private key'
+          $hermesSshKey = $env:HERMES_SOURCE_SSH_KEY.Trim().Replace("`r`n", "`n").Replace("`r", "`n")
+          if ($hermesSshKey -notmatch '-----BEGIN [A-Z0-9 ]+ PRIVATE KEY-----') {
+            try {
+              $hermesSshKey = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($hermesSshKey)).Trim().Replace("`r`n", "`n").Replace("`r", "`n")
+            } catch {
+              throw 'HERMES_SOURCE_SSH_KEY must be a raw or base64-encoded OpenSSH private key'
+            }
+          }
+          if ($hermesSshKey -notmatch '-----BEGIN [A-Z0-9 ]+ PRIVATE KEY-----') {
+            throw 'HERMES_SOURCE_SSH_KEY does not contain a recognized private key header'
           }
           $hermesPath = 'apps/gplus-bot-desktop/vendor/hermes-agent'
           $hermesUrl = (git config --file .gitmodules --get "submodule.$hermesPath.url").Trim()
