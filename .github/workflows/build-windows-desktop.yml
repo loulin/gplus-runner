@@ -451,6 +451,24 @@ jobs:
           }
           if (-not $tool) { throw 'signtool.exe was not found on the hosted Windows runner' }
           Write-Host "Using SignTool: $tool"
+          $publicCertPemPath = Join-Path $env:GITHUB_WORKSPACE 'scripts/certum-code-signing-public.pem'
+          if (-not (Test-Path -LiteralPath $publicCertPemPath -PathType Leaf)) {
+            throw "Public signing certificate is missing: $publicCertPemPath"
+          }
+          $publicCertPem = Get-Content -LiteralPath $publicCertPemPath -Raw
+          $publicCertBase64 = ($publicCertPem -replace '-----BEGIN CERTIFICATE-----', '' -replace '-----END CERTIFICATE-----', '' -replace '\s', '')
+          try {
+            $publicCertBytes = [Convert]::FromBase64String($publicCertBase64)
+          } catch {
+            throw "Public signing certificate PEM is invalid: $publicCertPemPath"
+          }
+          $publicCertPath = Join-Path $env:RUNNER_TEMP 'certum-code-signing-public.cer'
+          [IO.File]::WriteAllBytes($publicCertPath, $publicCertBytes)
+          $publicCertSha1 = (Get-FileHash -LiteralPath $publicCertPath -Algorithm SHA1).Hash.ToLowerInvariant()
+          if ($publicCertSha1 -ne '3ced6633e1492adc8ce396489c29a50062b15128') {
+            throw "Unexpected public signing certificate SHA-1: $publicCertSha1"
+          }
+          Write-Host "Using public signing certificate SHA-1: $publicCertSha1"
           $root = Join-Path $env:RUNNER_TEMP "gplus-digest-round-1-$env:GITHUB_RUN_ID"
           $digestRoot = Join-Path $root 'digests'
           New-Item -ItemType Directory -Path $digestRoot -Force | Out-Null
@@ -461,7 +479,7 @@ jobs:
             $fileId = ('file-{0:d5}' -f $index)
             $dir = Join-Path $digestRoot $fileId
             New-Item -ItemType Directory -Path $dir -Force | Out-Null
-            & $tool sign /dg $dir /fd SHA256 $exe.FullName
+            & $tool sign /dg $dir /fd SHA256 /f $publicCertPath $exe.FullName
             if ($LASTEXITCODE -ne 0) { throw "signtool /dg failed for $($exe.FullName)" }
             $dig = Join-Path $dir ($exe.Name + '.dig')
             $p7u = Join-Path $dir ($exe.Name + '.p7u')
