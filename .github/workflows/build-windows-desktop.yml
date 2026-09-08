@@ -442,7 +442,13 @@ jobs:
           if (Test-Path -LiteralPath $kitsRoot -PathType Container) {
             $toolCandidates += @(Get-ChildItem -LiteralPath $kitsRoot -File -Filter 'signtool.exe' -Recurse -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -ExpandProperty FullName)
           }
-          $tool = $toolCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          $preferredArch = @{ 'win-x64' = 'x64'; 'win-arm64' = 'arm64'; 'win-ia32' = 'x86' }[$env:TARGET]
+          $tool = $toolCandidates | Where-Object {
+            (Test-Path -LiteralPath $_ -PathType Leaf) -and $_ -match "[\\/]$preferredArch[\\/]signtool\.exe$"
+          } | Select-Object -First 1
+          if (-not $tool) {
+            $tool = $toolCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+          }
           if (-not $tool) { throw 'signtool.exe was not found on the hosted Windows runner' }
           Write-Host "Using SignTool: $tool"
           $root = Join-Path $env:RUNNER_TEMP "gplus-digest-round-1-$env:GITHUB_RUN_ID"
