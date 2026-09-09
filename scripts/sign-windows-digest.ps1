@@ -114,8 +114,10 @@ function Invoke-SignedDigest {
   $signedPath = "$DigestPath.signed"
   if (Test-Path -LiteralPath $signedPath -PathType Leaf) { Remove-Item -LiteralPath $signedPath -Force }
   for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-    & $ToolPath sign /ds /sha1 $CertificateThumbprint /fd SHA256 $DigestPath
-    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $signedPath -PathType Leaf) -and (Get-Item -LiteralPath $signedPath).Length -gt 0) {
+    $toolOutput = @(& $ToolPath sign /ds /sha1 $CertificateThumbprint /fd SHA256 $DigestPath 2>&1)
+    $toolExitCode = $LASTEXITCODE
+    foreach ($line in $toolOutput) { Write-Host ([string]$line) }
+    if ($toolExitCode -eq 0 -and (Test-Path -LiteralPath $signedPath -PathType Leaf) -and (Get-Item -LiteralPath $signedPath).Length -gt 0) {
       return $signedPath
     }
     if ($attempt -lt $Attempts) { Start-Sleep -Seconds (5 * $attempt) }
