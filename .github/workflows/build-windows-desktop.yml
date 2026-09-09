@@ -505,7 +505,10 @@ jobs:
           $exchangeId = [guid]::NewGuid().ToString()
           $manifest = [ordered]@{
             schemaVersion = 1; kind = 'gplus-windows-digest-request'; exchangeId = $exchangeId;
-            createdAt = [DateTimeOffset]::UtcNow.ToString('o'); expiresAt = [DateTimeOffset]::UtcNow.AddMinutes(30).ToString('o')
+            # Keep the P1 request usable after a delayed Windows signing session.
+            # The digest artifact is retained for seven days; expire the request
+            # one day earlier so the artifact cannot outlive its usable request.
+            createdAt = [DateTimeOffset]::UtcNow.ToString('o'); expiresAt = [DateTimeOffset]::UtcNow.AddDays(6).ToString('o')
             app = $env:APPLICATION; profile = $env:PROFILE; channel = 'staging'; target = $env:TARGET
             version = $version; buildNumber = $buildNumber; workflowRunId = [long]$env:GITHUB_RUN_ID; workflowRunAttempt = [int]$env:GITHUB_RUN_ATTEMPT
             workflowRevision = $env:GITHUB_SHA; round = 1; roundLabel = 'app-executables'; hashAlgorithm = 'SHA256'; timestampServer = 'http://time.certum.pl';
@@ -532,7 +535,7 @@ jobs:
           path: ${{ runner.temp }}/digest-request-output
           if-no-files-found: error
           compression-level: 9
-          retention-days: 1
+          retention-days: 7
 
       - name: Record digest request handoff
         if: inputs.delivery_mode == 'digest'

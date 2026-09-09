@@ -39,6 +39,11 @@ GitHub Windows Job 保留构建目录和 .p7u
 digest-request-<run-id>-<run-attempt>-round-<round>
 ```
 
+P1 request artifact 保留 7 天，manifest 的 `expiresAt` 设置为生成后 6 天。Windows
+签名机可以延后处理，但必须在 `expiresAt` 之前运行；过期 request 必须重新触发云端
+workflow，不能通过修改本地 manifest 绕过有效期校验。后续接入真实 callback token 时，
+token 的实际有效期也必须覆盖这段处理窗口。
+
 它只包含：
 
 ```text
