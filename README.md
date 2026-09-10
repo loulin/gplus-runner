@@ -6,33 +6,20 @@ documents; the application source remains private.
 
 ## Current status
 
-`Windows Desktop Build Handoff` is a manual workflow with these properties:
+[Windows Desktop Release](docs/windows-desktop-digest-release.md) uses three
+digest-signing rounds for Gplus Bot Desktop win-x64. GitHub keeps the full build;
+the local SimplySign machine receives only digests and returns signed responses.
+Set `delivery_mode=digest` and `publish=true` to publish verified packages through
+the application's existing Qiniu and Release API publisher. The default
+`publish=false` verifies signatures and packaging without publishing.
 
-- `application` selects `gplus-bot-desktop` or `libre-reader`; `profile` selects
-  `staging` or `production`; `target` selects one Windows target.
-- `source_ref` is resolved through the GitHub API before checkout, then the
-  private repository is checked out at the returned full SHA.
-- The job runs on native `windows-latest` x64 and currently enables `win-x64`.
-  `win-arm64` and `win-ia32` fail explicitly until matching hosted runners are
-  configured.
-- The GitHub App `gplus-source-reader` has `Contents: Read-only` access only to
-  `loulin/gplus`.
-- The job installs the filtered workspace, prepares the locked Hermes source,
-  runs Desktop JavaScript smoke tests, and builds an unsigned NSIS/ZIP package.
-- The job restores isolated npm, Electron, Electron Builder, and uv caches;
-  the pnpm store and all source/generated/build directories remain uncached.
-- The validated `win-unpacked` handoff is allow-list packaged and encrypted with
-  `age` before upload by default. An explicit `handoff_encryption=none` choice
-  uploads the same ZIP as plaintext with GitHub's minimum one-day retention.
+Source refs are resolved to immutable commits before private checkout. Publishing
+requires matching canonical annotated tag provenance. Staging uses RC versions;
+Production uses stable versions and its own Environment credentials.
 
-The complete process and the remaining implementation work are in
-[`docs/windows-desktop-release-plan.md`](docs/windows-desktop-release-plan.md).
-
-[`docs/windows-desktop-digest-signing-poc.md`](docs/windows-desktop-digest-signing-poc.md)
-defines an unintegrated Certum SimplySign digest-signing POC. It is deliberately
-kept outside the current release workflow until a real `/dg -> /ds -> /di`
-closure, signed-package immutability, and post-signing blockmap generation have
-all been verified.
+Libre Reader and full-workspace transfers use `delivery_mode=handoff`; see
+[Windows handoff](docs/windows-desktop-release-plan.md). Matching hosted runners
+currently enable win-x64; other Windows architectures fail explicitly.
 
 `macOS Desktop Release` is the formal signed publishing workflow. It supports
 both applications, `staging` and `production`, and native `mac-arm64` and
@@ -65,7 +52,7 @@ Configure these two repository secrets in `loulin/gplus-runner`:
 
 The App installation must remain limited to `loulin/gplus` and
 `Contents: Read-only`. Windows handoff mode does not use publishing
-credentials. macOS formal publishing uses environment-scoped credentials as
+credentials. Windows digest and macOS publishing use environment-scoped credentials as
 described below; values must never be committed to this repository or printed
 in workflow output.
 
@@ -194,7 +181,7 @@ gh workflow run build-windows-desktop.yml \
   -f application=gplus-bot-desktop \
   -f profile=staging \
   -f target=win-x64 \
-  -f source_ref=develop
+  -f source_ref=develop -f delivery_mode=handoff
 ```
 
 For a reproducible run, replace `develop` with the full private commit SHA.

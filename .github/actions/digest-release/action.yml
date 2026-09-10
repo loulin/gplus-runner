@@ -1,0 +1,5 @@
+name: Windows digest signing and release
+description: Sign through digest exchange and optionally publish verified artifacts
+runs:
+  using: node24
+  main: ../../../scripts/complete-windows-digest-release.cjs

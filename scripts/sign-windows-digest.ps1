@@ -6,7 +6,7 @@ param(
   [string] $Repository = 'loulin/gplus-runner',
   [string] $GithubToken = $env:GH_RELEASE_ARTIFACT_TOKEN,
   [string] $ResponseDirectory = (Join-Path $env:USERPROFILE '.gplus\gplus-desktop-digest-responses'),
-  [ValidateRange(1, 2)][int] $ExpectedRounds = 2,
+  [ValidateRange(1, 3)][int] $ExpectedRounds = 3,
   [ValidateRange(5, 300)][int] $PollSeconds = 15,
   [ValidateRange(1, 45)][int] $TimeoutMinutes = 40,
   [string] $SignToolPath,
@@ -114,8 +114,10 @@ function Invoke-SignedDigest {
   $signedPath = "$DigestPath.signed"
   if (Test-Path -LiteralPath $signedPath -PathType Leaf) { Remove-Item -LiteralPath $signedPath -Force }
   for ($attempt = 1; $attempt -le $Attempts; $attempt++) {
-    & $ToolPath sign /ds /sha1 $CertificateThumbprint /fd SHA256 $DigestPath
-    if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $signedPath -PathType Leaf) -and (Get-Item -LiteralPath $signedPath).Length -gt 0) {
+    $toolOutput = @(& $ToolPath sign /ds /sha1 $CertificateThumbprint /fd SHA256 $DigestPath 2>&1)
+    $toolExitCode = $LASTEXITCODE
+    foreach ($line in $toolOutput) { Write-Host ([string]$line) }
+    if ($toolExitCode -eq 0 -and (Test-Path -LiteralPath $signedPath -PathType Leaf) -and (Get-Item -LiteralPath $signedPath).Length -gt 0) {
       return $signedPath
     }
     if ($attempt -lt $Attempts) { Start-Sleep -Seconds (5 * $attempt) }
@@ -208,7 +210,7 @@ for ($round = 1; $round -le $ExpectedRounds; $round++) {
     if ([long]$request.workflowRunId -ne $RunId -or [int]$request.workflowRunAttempt -ne $runAttempt -or [int]$request.round -ne $round -or [string]$request.profile -cne $Profile) {
       throw 'Signing request identity does not match the requested run, attempt, round, or profile'
     }
-    if ([DateTimeOffset]::Parse([string]$request.expiresAt).ToUniversalTime() -le [DateTimeOffset]::UtcNow) { throw 'Signing request has expired' }
+    if ([DateTimeOffset]$request.expiresAt -le [DateTimeOffset]::UtcNow) { throw 'Signing request has expired' }
     if ([string]$request.hashAlgorithm -cne 'SHA256') { throw 'Signing request hash algorithm must be SHA256' }
     $provenance = $request.provenance
     $sourceSha = Require-NonEmptyString (Get-RequiredProperty $provenance 'sourceSha' 'request provenance') 'request provenance sourceSha'
