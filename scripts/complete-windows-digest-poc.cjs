@@ -189,6 +189,9 @@ async function main() {
   const installers = files.filter(file => file.endsWith('.exe'));
   const zips = files.filter(file => file.endsWith('.zip'));
   ensure(installers.length === 1 && zips.length === 1, 'Expected one NSIS installer and one ZIP');
+  const zipExpectedPath = path.join(root, 'zip-expected.json');
+  save(zipExpectedPath, [...signedHashes, [appUpdatePath, appUpdateHash]].map(([file, sha256]) => ({ entry: path.relative(unpacked, file).replaceAll('\\', '/'), sha256 })));
+  ps('Add-Type -AssemblyName System.IO.Compression.FileSystem; $expected=Get-Content -LiteralPath $env:POC_EXPECTED -Raw | ConvertFrom-Json; $z=[IO.Compression.ZipFile]::OpenRead($env:POC_ZIP); try { foreach($record in $expected) { $entry=$z.GetEntry($record.entry); if(-not $entry){throw "Expected ZIP entry missing"}; $stream=$entry.Open(); try {$actual=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()} finally {$stream.Dispose()}; if($actual -cne $record.sha256){throw "ZIP entry hash mismatch"} }; Write-Output "ZIP PE and updater configuration hashes verified" } finally {$z.Dispose()}', { POC_EXPECTED: zipExpectedPath, POC_ZIP: zips[0] });
   verify(state, installers[0]);
   const requireDesktop = createRequire(packagePath);
   const appBuilder = requireDesktop('app-builder-bin').appBuilderPath;
@@ -199,7 +202,7 @@ async function main() {
   ensure(metadata.sha512 === installerDescriptor.sha512 && metadata.files.some(file => file.url === installerDescriptor.url && file.sha512 === installerDescriptor.sha512 && file.size === installerDescriptor.size), 'Installer metadata does not match final signed bytes');
   metadata.files = descriptors;
   fs.writeFileSync(path.join(release, 'latest.yml'), yaml.dump(metadata));
-  const receipt = { ...json(statePath), signToolVersion: ps('(Get-Item -LiteralPath $env:POC_TOOL).VersionInfo.FileVersion', { POC_TOOL: signTool }).trim(), sourceSha: process.env.SOURCE_SHA, workflowRevision: process.env.GITHUB_SHA, packageMode: 'signed-digest-poc', published: false, artifacts: [...installers, ...zips, installers[0] + '.blockmap', path.join(release, 'latest.yml')].map(file => ({ name: path.basename(file), size: fs.statSync(file).size, sha256: hash(file), sha512: hash(file, 'sha512', 'base64') })) };
+  const receipt = { ...json(statePath), signToolVersion: ps('(Get-Item -LiteralPath $env:POC_TOOL).VersionInfo.FileVersion', { POC_TOOL: signTool }).trim(), sourceSha: process.env.SOURCE_SHA, workflowRevision: process.env.GITHUB_SHA, packageMode: 'signed-digest-poc', published: false, zipVerifiedEntries: signedHashes.size + 1, artifacts: [...installers, ...zips, installers[0] + '.blockmap', path.join(release, 'latest.yml')].map(file => ({ name: path.basename(file), size: fs.statSync(file).size, sha256: hash(file), sha512: hash(file, 'sha512', 'base64') })) };
   const receiptPath = path.join(root, 'poc-release-receipt.json');
   save(receiptPath, receipt);
   await artifacts.uploadArtifact(`digest-poc-verification-${state.runId}-${state.attempt}`, [receiptPath], root, { retentionDays: 7 });
