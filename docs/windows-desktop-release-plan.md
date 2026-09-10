@@ -1,9 +1,10 @@
-# Windows Desktop 多应用构建与发布计划
+# Windows Desktop 完整 Handoff 操作
 
-本文是 `loulin/gplus-runner` 的操作真源。它记录已经验证的跨仓库构建过程、
-当前安全边界，以及从 Staging 构建继续到本地 Windows 签名、七牛上传和
-Production 发布所需的工作。公开 runner 只保存自动化脚本和文档，Gplus Bot
-Desktop 与 Libre Reader 源码仍在私有仓库 `loulin/gplus`。
+本文适用于 `delivery_mode=handoff` 的完整工作区交接，包括 Libre Reader。
+Gplus Bot Desktop 的摘要签名与云端发布使用
+[Windows Desktop 摘要签名发布](windows-desktop-digest-release.md)。
+下文的本地打包、age 和云端不持有发布凭据约束仅适用于 handoff 模式。
+公开 runner 只保存脚本和文档，应用源码仍在私有仓库 `loulin/gplus`。
 
 ## 1. 目标与边界
 

@@ -3,10 +3,11 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
+const { releaseProfile, validatePublishInput, publishSignedRelease } = require('./publish-windows-digest-release.cjs');
 
 const thumbprint = '3CED6633E1492ADC8CE396489C29A50062B15128';
 const timestampServer = 'http://time.certum.pl';
-const root = path.join(process.env.RUNNER_TEMP, 'gplus-complete-digest-poc');
+const root = path.join(process.env.RUNNER_TEMP, 'gplus-digest-release');
 const statePath = path.join(root, 'state.json');
 const toolRequire = createRequire(path.join(process.env.RUNNER_TEMP, 'digest-poc-tools/package.json'));
 const artifacts = new (toolRequire('@actions/artifact').DefaultArtifactClient)();
@@ -94,11 +95,11 @@ async function signRound(files, label) {
     return { fileId, relativePath: path.relative(state.unpacked, file).replaceAll('\\', '/'), digRelativePath, digSha256: hash(dig), p7uSha256: hash(p7u), originalSha256: hash(file) };
   });
   const exchangeId = crypto.randomUUID();
-  const key = `signing-callbacks/staging/win-x64/${state.runId}-${state.attempt}/round-${round}-${exchangeId}.zip`;
+  const key = `signing-callbacks/${state.profile}/win-x64/${state.runId}-${state.attempt}/round-${round}-${exchangeId}.zip`;
   const request = {
     schemaVersion: 1, kind: 'gplus-windows-digest-request', exchangeId,
     createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(),
-    app: 'gplus-bot-desktop', profile: 'staging', channel: 'staging', target: 'win-x64',
+    app: 'gplus-bot-desktop', profile: state.profile, channel: state.channel, target: 'win-x64',
     version: state.version, buildNumber: state.buildNumber, workflowRunId: state.runId, workflowRunAttempt: state.attempt,
     workflowRevision: process.env.GITHUB_SHA, round, roundLabel: label, hashAlgorithm: 'SHA256', timestampServer,
     provenance: { sourceRef: process.env.SOURCE_REF, sourceSha: process.env.SOURCE_SHA },
@@ -141,28 +142,31 @@ async function builder(state, format) {
   const requireDesktop = createRequire(path.join(state.desktop, 'package.json'));
   const cli = requireDesktop.resolve('electron-builder/cli.js');
   await new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, '--win', format, '--x64', '--prepackaged', state.unpacked, '--publish', 'never'], { cwd: state.desktop, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false', GPLUS_DIGEST_POC_MODULE: __filename }, stdio: 'inherit' });
+    const child = spawn(process.execPath, [cli, '--win', format, '--x64', '--prepackaged', state.unpacked, '--publish', 'never'], { cwd: state.desktop, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false', GPLUS_DIGEST_MODULE: __filename }, stdio: 'inherit' });
     child.on('error', reject);
     child.on('exit', code => code === 0 ? resolve() : reject(new Error(`electron-builder ${format} failed: ${code}`)));
   });
 }
 async function main() {
-  ensure(process.env.APPLICATION === 'gplus-bot-desktop' && process.env.PROFILE === 'staging' && process.env.TARGET === 'win-x64' && process.env.DELIVERY_MODE === 'digest', 'POC only supports staging win-x64 digest mode');
+  ensure(process.env.APPLICATION === 'gplus-bot-desktop' && process.env.TARGET === 'win-x64' && process.env.DELIVERY_MODE === 'digest', 'Digest signing supports Gplus Bot Desktop win-x64');
+  const profile = releaseProfile(process.env.PROFILE);
+  const publishRequested = process.env.PUBLISH_RELEASE === 'true';
   ensure(process.env.QINIU_ACCESS_KEY && process.env.QINIU_SECRET_KEY, 'Qiniu callback credentials are required');
   fs.mkdirSync(root, { recursive: true });
   const source = path.join(process.env.GITHUB_WORKSPACE, 'source');
   const desktop = path.join(source, '.windows-handoff/payload/generated/apps/desktop');
   const unpacked = path.join(desktop, 'release/win-unpacked');
   ensure(fs.existsSync(unpacked), 'Prepared win-unpacked is missing');
-  const config = Object.fromEntries(fs.readFileSync(path.join(source, 'config/storage/qiniu/staging.env'), 'utf8').split(/\r?\n/).filter(line => /^[A-Z_]+=/.test(line)).map(line => { const index = line.indexOf('='); return [line.slice(0, index), line.slice(index + 1).trim()]; }));
-  ensure(config.QINIU_BUCKET && /^https:\/\//.test(config.QINIU_DOMAIN), 'Staging storage configuration is missing');
+  const config = Object.fromEntries(fs.readFileSync(path.join(source, `config/storage/qiniu/${profile.channel}.env`), 'utf8').split(/\r?\n/).filter(line => /^[A-Z_]+=/.test(line)).map(line => { const index = line.indexOf('='); return [line.slice(0, index), line.slice(index + 1).trim()]; }));
+  ensure(config.QINIU_BUCKET && /^https:\/\//.test(config.QINIU_DOMAIN), 'Storage configuration is missing');
   const signTool = ps('$p=Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Filter signtool.exe -Recurse -File | Where-Object {$_.Directory.Name -eq "x64"} | Sort-Object FullName -Descending | Select-Object -First 1; if(-not $p){throw "SignTool missing"}; $p.FullName').trim();
   const publicCert = path.join(root, 'public.cer');
   const cert = new crypto.X509Certificate(fs.readFileSync(path.join(__dirname, 'certum-code-signing-public.pem')));
   fs.writeFileSync(publicCert, cert.raw);
   ensure(hash(publicCert, 'sha1').toUpperCase() === thumbprint, 'Unexpected public signing certificate');
   const handoff = json(path.join(source, '.windows-handoff/handoff-manifest.json'));
-  const state = { desktop, unpacked, signTool, publicCert, bucket: config.QINIU_BUCKET, domain: config.QINIU_DOMAIN, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT), version: handoff.version, buildNumber: handoff.buildNumber, round: 0, rounds: [] };
+  if (publishRequested) validatePublishInput(handoff, process.env);
+  const state = { desktop, unpacked, signTool, publicCert, profile: process.env.PROFILE, channel: profile.channel, bucket: config.QINIU_BUCKET, domain: config.QINIU_DOMAIN, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT), version: handoff.version, buildNumber: handoff.buildNumber, round: 0, rounds: [] };
   save(statePath, state);
   const executables = walk(unpacked).filter(file => file.toLowerCase().endsWith('.exe')).sort();
   await signRound(executables, 'app-executables');
@@ -170,10 +174,10 @@ async function main() {
   const packagePath = path.join(desktop, 'package.json');
   const pkg = json(packagePath);
   const publisherName = [cert.subject.split('\n').find(line => line.startsWith('CN=')).slice(3)];
-  ensure(pkg.build.nsis?.perMachine !== true && signedHashes.has(path.join(unpacked, 'resources/elevate.exe')), 'POC requires the signed per-user NSIS elevate helper');
+  ensure(pkg.build.nsis?.perMachine !== true && signedHashes.has(path.join(unpacked, 'resources/elevate.exe')), 'Digest packaging requires the signed per-user NSIS elevate helper');
   // NSIS otherwise overwrites and re-signs elevate.exe after ZIP creation.
   pkg.build.nsis = { ...pkg.build.nsis, packElevateHelper: false };
-  pkg.build.win = { ...pkg.build.win, signAndEditExecutable: true, signExecutable: true, verifyUpdateCodeSignature: true, signtoolOptions: { signingHashAlgorithms: ['sha256'], sign: path.join(__dirname, 'digest-poc-builder-hook.cjs'), publisherName } };
+  pkg.build.win = { ...pkg.build.win, signAndEditExecutable: true, signExecutable: true, verifyUpdateCodeSignature: true, signtoolOptions: { signingHashAlgorithms: ['sha256'], sign: path.join(__dirname, 'digest-builder-hook.cjs'), publisherName } };
   pkg.build.artifactBuildCompleted = undefined;
   save(packagePath, pkg);
   // Prepackaged builds skip afterPack, which normally writes publisherName.
@@ -207,10 +211,26 @@ async function main() {
   metadata.files = descriptors;
   fs.writeFileSync(path.join(release, 'latest.yml'), yaml.dump(metadata));
   const receipt = { ...json(statePath), signToolVersion: ps('(Get-Item -LiteralPath $env:POC_TOOL).VersionInfo.FileVersion', { POC_TOOL: signTool }).trim(), sourceSha: process.env.SOURCE_SHA, workflowRevision: process.env.GITHUB_SHA, packageMode: 'signed-digest-poc', published: false, zipVerifiedEntries: signedHashes.size + 1, artifacts: [...installers, ...zips, installers[0] + '.blockmap', path.join(release, 'latest.yml')].map(file => ({ name: path.basename(file), size: fs.statSync(file).size, sha256: hash(file), sha512: hash(file, 'sha512', 'base64') })) };
-  const receiptPath = path.join(root, 'poc-release-receipt.json');
+  receipt.packageMode = 'signed-digest';
+  receipt.publishRequested = publishRequested;
+  const receiptPath = path.join(root, 'digest-release-receipt.json');
   save(receiptPath, receipt);
-  await artifacts.uploadArtifact(`digest-poc-verification-${state.runId}-${state.attempt}`, [receiptPath], root, { retentionDays: 7 });
-  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nDigest POC passed: ${executables.length} application PEs, signed NSIS uninstaller and installer, ZIP and regenerated metadata. No release published.\n`);
+  try {
+    if (publishRequested) {
+      receipt.publishResult = await publishSignedRelease({ handoff, workRoot: path.resolve(desktop, '../..'), releaseDir: release, publishWork: path.join(root, 'publish-work'), env: process.env });
+      receipt.published = true;
+      save(receiptPath, receipt);
+    }
+  } finally {
+    const evidence = [receiptPath];
+    const publishWork = path.join(root, 'publish-work');
+    for (const name of ['release-receipt.json', 'publish-result.json']) {
+      const file = path.join(publishWork, name);
+      if (fs.existsSync(file)) evidence.push(file);
+    }
+    await artifacts.uploadArtifact(`digest-release-verification-${state.runId}-${state.attempt}`, evidence, root, { retentionDays: 7 });
+  }
+  fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `\nDigest signing passed: ${executables.length} application PEs, signed NSIS uninstaller and installer, ZIP and regenerated metadata. Published: ${receipt.published}; ${state.profile}/${state.version}/${state.buildNumber}.\n`);
 }
 module.exports = { signRound };
 if (require.main === module) main().catch(error => { console.error(error.message); process.exitCode = 1; });

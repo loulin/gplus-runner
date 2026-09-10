@@ -6,7 +6,7 @@ param(
   [string] $Repository = 'loulin/gplus-runner',
   [string] $GithubToken = $env:GH_RELEASE_ARTIFACT_TOKEN,
   [string] $ResponseDirectory = (Join-Path $env:USERPROFILE '.gplus\gplus-desktop-digest-responses'),
-  [ValidateRange(1, 3)][int] $ExpectedRounds = 2,
+  [ValidateRange(1, 3)][int] $ExpectedRounds = 3,
   [ValidateRange(5, 300)][int] $PollSeconds = 15,
   [ValidateRange(1, 45)][int] $TimeoutMinutes = 40,
   [string] $SignToolPath,
