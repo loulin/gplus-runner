@@ -1,8 +1,8 @@
 # Windows Desktop 摘要签名 POC
 
-状态：实验性。此文档定义本地 SimplySign 摘要签名 POC 的输入、输出与停止条件。
-它尚未连接到现有 `build-windows-desktop.yml`，不能用于发布 Production 版本，也不
-替代完整 handoff 的签名和发布流程。
+状态：实验性。`build-windows-desktop.yml` 的 `delivery_mode=digest` 生成摘要请求；
+同时设置 `complete_digest_poc=true` 可运行 staging win-x64 三轮签名和打包验证。
+该入口不上传安装包、不调用 Release API、不发布版本。
 
 ## 目标
 
@@ -14,10 +14,11 @@ GitHub Windows Job 保留构建目录和 .p7u
   -> 小型 digest request artifact
   -> 本地 signtool /ds
   -> 单个 Qiniu callback ZIP
-  -> GitHub Windows Job signtool /di 和最终发布
+  -> GitHub Windows Job signtool /di、时间戳、打包和验签
 ```
 
-在 POC 通过前，现有 age handoff 仍是唯一可用的 Windows 发布路径。
+完整 POC 使用三轮交互：应用 EXE、NSIS 卸载器、NSIS 安装器。NSIS 必须先把已签
+卸载器嵌入安装器，才能生成安装器摘要，因此卸载器和安装器不能合并为同一轮。
 
 ## 前置条件
 
@@ -39,10 +40,14 @@ GitHub Windows Job 保留构建目录和 .p7u
 digest-request-<run-id>-<run-attempt>-round-<round>
 ```
 
-P1 request artifact 保留 7 天，manifest 的 `expiresAt` 设置为生成后 6 天。Windows
+单轮本地 P1 request artifact 保留 7 天，manifest 的 `expiresAt` 设置为生成后 6 天。Windows
 签名机可以延后处理，但必须在 `expiresAt` 之前运行；过期 request 必须重新触发云端
-workflow，不能通过修改本地 manifest 绕过有效期校验。后续接入真实 callback token 时，
-token 的实际有效期也必须覆盖这段处理窗口。
+workflow，不能通过修改本地 manifest 绕过有效期校验。该单轮入口必须使用
+`-SkipCallbackUpload`，其 callback 字段不提供可用上传 token。
+
+`complete_digest_poc=true` 的请求和单对象上传 token 有效期均为一小时，每轮云端等待
+最多 40 分钟。请求 artifact 保留一天，七牛响应对象设置一天后自动删除。云端只上传
+摘要请求和 `digest-poc-verification-<run-id>-<attempt>` 验证报告 artifact。
 
 它只包含：
 
@@ -98,15 +103,26 @@ pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
 %USERPROFILE%\.gplus\gplus-desktop-digest-responses
 ```
 
-端到端 POC 通过后，移除 `-SkipCallbackUpload`。脚本会轮询 round 1 和 round 2 的
-artifact；两轮都完成后才退出：
+完整验证先触发云端入口，再使用返回的真实 Run ID 启动签名机。staging environment
+须配置 `QINIU_ACCESS_KEY` 和 `QINIU_SECRET_KEY`；本地只接收单对象上传 token。
+
+```powershell
+gh workflow run build-windows-desktop.yml --repo loulin/gplus-runner `
+  --ref codex/windows-digest-signing-poc `
+  -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 `
+  -f source_ref=<完整应用提交SHA> -f handoff_encryption=none `
+  -f delivery_mode=digest -f complete_digest_poc=true
+```
+
+第一轮真实摘要 artifact 出现后执行以下命令；三轮响应均回传后脚本退出：
 
 ```powershell
 pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
   -RunId <run-id> `
   -Profile staging `
   -CertificateSha1 '<40 位证书 SHA-1 指纹>' `
-  -ExpectedRounds 2
+  -SignToolPath '<本机 signtool.exe 完整路径>' `
+  -ExpectedRounds 3
 ```
 
 本地脚本只按 request manifest 的 `files[]` 逐项签名，拒绝扫描任意 `.dig` 文件。它
@@ -118,11 +134,13 @@ pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
 1. P0：使用不含应用代码的临时 unsigned PE，实测 `/dg -> /ds -> /di`；`/ds`
    使用 `/sha1`，`/di` 后单独执行 `signtool timestamp /tr http://time.certum.pl /td SHA256`，
    再用 `signtool verify` 与 `Get-AuthenticodeSignature` 确认 `Valid`。
-2. P1：Gplus Bot Desktop staging `win-x64` 完成两轮摘要、已签 ZIP/NSIS、独立
+2. P1：Gplus Bot Desktop staging `win-x64` 完成三轮摘要、已签 ZIP/NSIS、独立
    blockmap、`latest.yml` 和 release receipt，但不发布。
+   ZIP 内应用 EXE 和 updater publisher 配置必须与打包前哈希一致。验证报告记录每轮
+   PE 的 Authenticode 结果、证书指纹、Certum 时间戳和最终产物摘要。
 3. P2：再接入云端的 Qiniu upload 和 Release API，完成一次 staging 发布后才讨论
    Production。
 
-在任一阶段停止并继续使用完整 handoff，条件包括：SimplySign 不支持 `/ds`、时间戳或
+任一步失败必须停止并记录错误，不自动切换 unsigned。停止条件包括：SimplySign 不支持 `/ds`、时间戳或
 Authenticode 验证失败、electron-builder 改写了第一轮已签的 `win-unpacked`，或最终
 installer 签名后不能独立重新生成 blockmap。
