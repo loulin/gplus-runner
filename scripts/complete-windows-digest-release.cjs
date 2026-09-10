@@ -95,7 +95,7 @@ async function signRound(files, label) {
     return { fileId, relativePath: path.relative(state.unpacked, file).replaceAll('\\', '/'), digRelativePath, digSha256: hash(dig), p7uSha256: hash(p7u), originalSha256: hash(file) };
   });
   const exchangeId = crypto.randomUUID();
-  const key = `signing-callbacks/${state.profile}/win-x64/${state.runId}-${state.attempt}/round-${round}-${exchangeId}.zip`;
+  const key = `signing-callbacks/${state.channel}/win-x64/${state.runId}-${state.attempt}/round-${round}-${exchangeId}.zip`;
   const request = {
     schemaVersion: 1, kind: 'gplus-windows-digest-request', exchangeId,
     createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3600000).toISOString(),
