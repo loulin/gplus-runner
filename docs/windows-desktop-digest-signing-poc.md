@@ -4,6 +4,12 @@
 同时设置 `complete_digest_poc=true` 可运行 staging win-x64 三轮签名和打包验证。
 该入口不上传安装包、不调用 Release API、不发布版本。
 
+已通过的完整验收：[Run 34479386069](https://github.com/loulin/gplus-runner/actions/runs/34479386069)，
+workflow 提交 `fa94adcd3a9f72ba0c03378949e41a32bf2baa92`。三轮分别验证 21 个应用 EXE、
+1 个卸载器和 1 个安装器，全部 Authenticode Valid 且带 Certum 时间戳。摘要请求合计
+11,035 字节，签名响应 ZIP 合计 18,119 字节；完整 PE、ZIP 和 NSIS 均留在云端。
+报告 artifact：`digest-poc-verification-34479386069-1`，包含各轮验签结果及最终产物摘要。
+
 ## 目标
 
 验证 `signtool /dg -> /ds -> /di` 能够把已登录 Certum SimplySign 的本地 Windows
