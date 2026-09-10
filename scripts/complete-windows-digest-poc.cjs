@@ -170,6 +170,9 @@ async function main() {
   const packagePath = path.join(desktop, 'package.json');
   const pkg = json(packagePath);
   const publisherName = [cert.subject.split('\n').find(line => line.startsWith('CN=')).slice(3)];
+  ensure(pkg.build.nsis?.perMachine !== true && signedHashes.has(path.join(unpacked, 'resources/elevate.exe')), 'POC requires the signed per-user NSIS elevate helper');
+  // NSIS otherwise overwrites and re-signs elevate.exe after ZIP creation.
+  pkg.build.nsis = { ...pkg.build.nsis, packElevateHelper: false };
   pkg.build.win = { ...pkg.build.win, signAndEditExecutable: true, signExecutable: true, verifyUpdateCodeSignature: true, signtoolOptions: { signingHashAlgorithms: ['sha256'], sign: path.join(__dirname, 'digest-poc-builder-hook.cjs'), publisherName } };
   pkg.build.artifactBuildCompleted = undefined;
   save(packagePath, pkg);
