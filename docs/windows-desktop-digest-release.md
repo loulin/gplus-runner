@@ -73,7 +73,9 @@ pwsh -NoProfile -File .\scripts\sign-windows-digest.ps1 `
 `publish-result.json`。必须确认三轮每项为 Valid、证书指纹匹配、有 Certum 时间戳，
 最终文件摘要与公开对象、feed 和 Release API 一致。
 
-签名打包基线 [Run 34479386069](https://github.com/loulin/gplus-runner/actions/runs/34479386069)
-验证了 21 个应用 EXE、1 个卸载器、1 个安装器。请求 ZIP 合计 11,035 bytes，
-响应 ZIP 合计 18,119 bytes。安装替换和自动更新需要匹配硬件的独立验收，不能用
+Staging 发布验收 [Run 34485941144](https://github.com/loulin/gplus-runner/actions/runs/34485941144)
+验证了 21 个应用 EXE、1 个卸载器、1 个安装器，全部 Authenticode Valid 且带
+Certum 时间戳。版本为 `0.2.6-rc.1 / 1055`，Release API 记录 `162` 为 `published`，
+公开 receipt、feed 和 immutable HEAD 回读通过。请求 ZIP 合计 11,020 bytes，
+响应 ZIP 合计 18,121 bytes。安装替换和自动更新需要匹配硬件的独立验收，不能用
 云端发布成功代替；Production 也需要单独执行和验收。
