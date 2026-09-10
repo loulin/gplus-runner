@@ -38,6 +38,11 @@ on:
         default: handoff
         type: choice
         options: [handoff, digest]
+      complete_digest_poc:
+        description: Complete staging digest signing and packaging without publishing
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -410,8 +415,22 @@ jobs:
           $retention = if ($env:HANDOFF_ENCRYPTION -eq 'none') { '1 day (minimum GitHub Artifact retention)' } else { '7 days' }
           @('### Windows Desktop handoff', '', "- Application: $env:APPLICATION", "- Profile/target: $env:PROFILE / $env:TARGET", "- Source: $env:SOURCE_SHA ($env:SOURCE_REF)", "- Version/build: $($manifest.version) / $($manifest.buildNumber)", "- Mode: $($manifest.handoffEncryption)", "- Artifact: $env:APPLICATION-$env:PROFILE-$env:TARGET-handoff-$env:GITHUB_RUN_ID", "- File: $file", "- SHA-256: $digest", "- Retention: $retention") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
 
+      - name: Prepare digest POC tools
+        if: inputs.delivery_mode == 'digest' && inputs.complete_digest_poc
+        shell: pwsh
+        run: |
+          npm install --prefix "$env:RUNNER_TEMP/digest-poc-tools" --no-save --ignore-scripts @actions/artifact@2.3.2 js-yaml@4.1.0
+          if ($LASTEXITCODE -ne 0) { throw 'Digest POC tool installation failed' }
+
+      - name: Complete staging digest POC without publishing
+        if: inputs.delivery_mode == 'digest' && inputs.complete_digest_poc
+        uses: ./.github/actions/digest-poc
+        env:
+          QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
+          QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
+
       - name: Create digest signing request
-        if: inputs.delivery_mode == 'digest'
+        if: inputs.delivery_mode == 'digest' && !inputs.complete_digest_poc
         shell: pwsh
         working-directory: source
         env:
@@ -528,7 +547,7 @@ jobs:
           "DIGEST_REQUEST_OUT=$out" >> $env:GITHUB_ENV
 
       - name: Upload digest signing request
-        if: inputs.delivery_mode == 'digest'
+        if: inputs.delivery_mode == 'digest' && !inputs.complete_digest_poc
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: digest-request-${{ github.run_id }}-${{ github.run_attempt }}-round-1
@@ -538,7 +557,7 @@ jobs:
           retention-days: 7
 
       - name: Record digest request handoff
-        if: inputs.delivery_mode == 'digest'
+        if: inputs.delivery_mode == 'digest' && !inputs.complete_digest_poc
         shell: pwsh
         run: |
           @('### Windows digest request', '', "- Artifact: digest-request-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT-round-1", '- Status: request uploaded; local /ds validation can proceed', '- Callback: not enabled in this P1 transport step') | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

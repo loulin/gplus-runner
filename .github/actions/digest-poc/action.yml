@@ -1,0 +1,5 @@
+name: Complete staging digest POC
+description: Validate digest signing and packaging without publishing
+runs:
+  using: node24
+  main: ../../../scripts/complete-windows-digest-poc.cjs
