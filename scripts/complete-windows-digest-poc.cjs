@@ -156,7 +156,7 @@ async function main() {
   ensure(fs.existsSync(unpacked), 'Prepared win-unpacked is missing');
   const config = Object.fromEntries(fs.readFileSync(path.join(source, 'config/storage/qiniu/staging.env'), 'utf8').split(/\r?\n/).filter(line => /^[A-Z_]+=/.test(line)).map(line => { const index = line.indexOf('='); return [line.slice(0, index), line.slice(index + 1).trim()]; }));
   ensure(config.QINIU_BUCKET && /^https:\/\//.test(config.QINIU_DOMAIN), 'Staging storage configuration is missing');
-  const signTool = ps('$p=Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Filter signtool.exe -Recurse -File | Where-Object {$_.FullName -match "[\\/]x64[\\/]signtool.exe$"} | Sort-Object FullName -Descending | Select-Object -First 1; if(-not $p){throw "SignTool missing"}; $p.FullName').trim();
+  const signTool = ps('$p=Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Filter signtool.exe -Recurse -File | Where-Object {$_.Directory.Name -eq "x64"} | Sort-Object FullName -Descending | Select-Object -First 1; if(-not $p){throw "SignTool missing"}; $p.FullName').trim();
   const publicCert = path.join(root, 'public.cer');
   const cert = new crypto.X509Certificate(fs.readFileSync(path.join(__dirname, 'certum-code-signing-public.pem')));
   fs.writeFileSync(publicCert, cert.raw);
