@@ -181,7 +181,7 @@ gh workflow run build-windows-desktop.yml \
   -f application=gplus-bot-desktop \
   -f profile=staging \
   -f target=win-x64 \
-  -f source_ref=develop
+  -f source_ref=develop -f delivery_mode=handoff
 ```
 
 For a reproducible run, replace `develop` with the full private commit SHA.

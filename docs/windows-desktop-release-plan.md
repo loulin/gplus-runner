@@ -223,7 +223,7 @@ gh workflow run build-windows-desktop.yml \
   --repo loulin/gplus-runner \
   --ref main \
   -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 \
-  -f source_ref=develop
+  -f source_ref=develop -f delivery_mode=handoff
 ```
 
 问题复现或候选版本使用完整 SHA：
@@ -233,7 +233,7 @@ gh workflow run build-windows-desktop.yml \
   --repo loulin/gplus-runner \
   --ref main \
   -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 \
-  -f source_ref=<40-character-private-commit-sha>
+  -f source_ref=<40-character-private-commit-sha> -f delivery_mode=handoff
 ```
 
 查询并下载脱敏 manifest 与加密 handoff：

@@ -34,7 +34,7 @@ blockmap 和 `latest.yml`。正式发布通过应用的
 
 ```powershell
 gh workflow run build-windows-desktop.yml --repo loulin/gplus-runner `
-  --ref codex/windows-digest-signing-poc `
+  --ref main `
   -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 `
   -f source_ref=<完整应用提交SHA> -f handoff_encryption=none `
   -f delivery_mode=digest -f publish=true
