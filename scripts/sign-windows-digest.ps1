@@ -210,7 +210,7 @@ for ($round = 1; $round -le $ExpectedRounds; $round++) {
     if ([long]$request.workflowRunId -ne $RunId -or [int]$request.workflowRunAttempt -ne $runAttempt -or [int]$request.round -ne $round -or [string]$request.profile -cne $Profile) {
       throw 'Signing request identity does not match the requested run, attempt, round, or profile'
     }
-    if ([DateTimeOffset]::Parse([string]$request.expiresAt).ToUniversalTime() -le [DateTimeOffset]::UtcNow) { throw 'Signing request has expired' }
+    if ([DateTimeOffset]$request.expiresAt -le [DateTimeOffset]::UtcNow) { throw 'Signing request has expired' }
     if ([string]$request.hashAlgorithm -cne 'SHA256') { throw 'Signing request hash algorithm must be SHA256' }
     $provenance = $request.provenance
     $sourceSha = Require-NonEmptyString (Get-RequiredProperty $provenance 'sourceSha' 'request provenance') 'request provenance sourceSha'
