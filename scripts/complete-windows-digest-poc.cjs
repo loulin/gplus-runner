@@ -197,8 +197,9 @@ async function main() {
   ps('Add-Type -AssemblyName System.IO.Compression.FileSystem; $expected=Get-Content -LiteralPath $env:POC_EXPECTED -Raw | ConvertFrom-Json; $z=[IO.Compression.ZipFile]::OpenRead($env:POC_ZIP); try { foreach($record in $expected) { $entry=$z.GetEntry($record.entry); if(-not $entry){throw "Expected ZIP entry missing"}; $stream=$entry.Open(); try {$actual=[Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($stream)).ToLowerInvariant()} finally {$stream.Dispose()}; if($actual -cne $record.sha256){throw "ZIP entry hash mismatch"} }; Write-Output "ZIP PE and updater configuration hashes verified" } finally {$z.Dispose()}', { POC_EXPECTED: zipExpectedPath, POC_ZIP: zips[0] });
   verify(state, installers[0]);
   const requireDesktop = createRequire(packagePath);
-  const appBuilder = requireDesktop('app-builder-bin').appBuilderPath;
-  run(appBuilder, ['blockmap', '--input', installers[0], '--output', installers[0] + '.blockmap']);
+  const { buildBlockMap } = requireDesktop('app-builder-lib/out/targets/blockmap/blockmap');
+  const blockmapInfo = await buildBlockMap(installers[0], 'gzip', installers[0] + '.blockmap');
+  ensure(blockmapInfo.size === fs.statSync(installers[0]).size && blockmapInfo.sha512 === hash(installers[0], 'sha512', 'base64'), 'Regenerated blockmap describes different installer bytes');
   const metadata = yaml.load(fs.readFileSync(path.join(release, 'latest.yml'), 'utf8'));
   const descriptors = [...installers, ...zips].map(file => ({ url: path.basename(file), sha512: hash(file, 'sha512', 'base64'), size: fs.statSync(file).size }));
   const installerDescriptor = descriptors[0];
