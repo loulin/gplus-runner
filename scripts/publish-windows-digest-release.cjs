@@ -8,6 +8,11 @@ const profiles = Object.freeze({
   production: { channel: 'prod', baseUrl: 'https://assets.ourdrs.com/apps/gplus-bot-desktop', apiUrl: 'https://ptt.plus' },
 });
 function ensure(ok, message) { if (!ok) throw new Error(message); }
+function requiredSignerSubjectName(value) {
+  const subjectName = String(value || '').trim();
+  ensure(subjectName, 'Digest publish requires the signer Subject CN');
+  return subjectName;
+}
 function releaseProfile(profile) {
   ensure(Object.hasOwn(profiles, profile), 'Unsupported release profile');
   return profiles[profile];
@@ -24,9 +29,10 @@ function validatePublishInput(handoff, env) {
   ensure(env.QINIU_ACCESS_KEY && env.QINIU_SECRET_KEY && env.RELEASE_TOKEN, 'Qiniu and Release API credentials are required');
   return profile;
 }
-function publisherInvocation({ handoff, workRoot, releaseDir, publishWork, env }) {
+function publisherInvocation({ handoff, workRoot, releaseDir, publishWork, signerSubjectName, env }) {
   const profile = validatePublishInput(handoff, env);
   const provenance = handoff.sourceProvenance;
+  const resolvedSignerSubjectName = requiredSignerSubjectName(signerSubjectName);
   return {
     args: [path.join(workRoot, 'apps/gplus-bot-desktop/scripts/release-gplus-desktop-update.mjs'), '--target', handoff.target, '--channel', profile.channel, '--version', handoff.version, '--package-json', path.join(workRoot, 'apps/gplus-bot-desktop/package.json'), '--skip-build', '--base-url', profile.baseUrl],
     options: {
@@ -49,6 +55,7 @@ function publisherInvocation({ handoff, workRoot, releaseDir, publishWork, env }
         GPLUS_DESKTOP_PUBLISH_WORK_DIR: publishWork,
         GPLUS_DESKTOP_UNSIGNED: '0',
         DESKTOP_WIN_SKIP_SIGN_AND_EDIT: '0',
+        WIN_CSC_SUBJECT_NAME: resolvedSignerSubjectName,
       },
     },
   };

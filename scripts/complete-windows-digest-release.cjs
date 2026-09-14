@@ -173,7 +173,9 @@ async function main() {
   const signedHashes = new Map(executables.map(file => [file, hash(file)]));
   const packagePath = path.join(desktop, 'package.json');
   const pkg = json(packagePath);
-  const publisherName = [cert.subject.split('\n').find(line => line.startsWith('CN=')).slice(3)];
+  const signerSubjectName = cert.subject.split('\n').find(line => line.startsWith('CN='))?.slice(3).trim();
+  ensure(signerSubjectName, 'Public signing certificate Subject CN is missing');
+  const publisherName = [signerSubjectName];
   ensure(pkg.build.nsis?.perMachine !== true && signedHashes.has(path.join(unpacked, 'resources/elevate.exe')), 'Digest packaging requires the signed per-user NSIS elevate helper');
   // NSIS otherwise overwrites and re-signs elevate.exe after ZIP creation.
   pkg.build.nsis = { ...pkg.build.nsis, packElevateHelper: false };
@@ -217,7 +219,7 @@ async function main() {
   save(receiptPath, receipt);
   try {
     if (publishRequested) {
-      receipt.publishResult = await publishSignedRelease({ handoff, workRoot: path.resolve(desktop, '../..'), releaseDir: release, publishWork: path.join(root, 'publish-work'), env: process.env });
+      receipt.publishResult = await publishSignedRelease({ handoff, workRoot: path.resolve(desktop, '../..'), releaseDir: release, publishWork: path.join(root, 'publish-work'), signerSubjectName, env: process.env });
       receipt.published = true;
       save(receiptPath, receipt);
     }

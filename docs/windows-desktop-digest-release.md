@@ -17,6 +17,11 @@ blockmap 和 `latest.yml`。正式发布通过应用的
 发布器负责 immutable create-only、公开 HEAD 校验、Release API upsert/latest
 回读，最后更新 target manifest；任一步失败都停止，不切换 unsigned。
 
+发布时 runner 把内置摘要签名证书的 Subject CN 作为 `WIN_CSC_SUBJECT_NAME` 注入应用发布器，
+使生产 Windows 的签名门禁按真实签名的安装包执行 Authenticode 校验；该值取自
+`scripts/certum-code-signing-public.pem`，与 `/ds /sha1` 使用的证书指纹一致，缺失时在调用
+发布器前直接失败，不跳过校验。
+
 `profile=staging` 对应 `channel=staging`，必须使用 `-rc.N` 版本；
 `profile=production` 对应 `channel=prod`，必须使用稳定版本。应用版本、build number、
 源码提交和 canonical annotated tag 必须一致。环境 URL 由现有应用发布器与
