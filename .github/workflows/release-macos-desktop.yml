@@ -233,6 +233,27 @@ jobs:
             corepack pnpm install --filter 'libre-reader...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
           fi
 
+      - name: Provision auxiliary acceptance runtime
+        if: inputs.application == 'gplus-bot-desktop'
+        working-directory: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 发布链在打包前会用 acceptance harness 校验本次 materialize 出来的 overlay，
+          # harness 需要一份带 Hermes 核心依赖的解释器；runner 上没有已安装的 App，
+          # 因此这里显式构建锁定依赖的 venv 并通过 GPLUS_DESKTOP_ACCEPTANCE_PYTHON 注入。
+          hermes_source="$GITHUB_WORKSPACE/source/apps/gplus-bot-desktop/vendor/hermes-agent"
+          test -f "$hermes_source/pyproject.toml"
+          test -f "$hermes_source/uv.lock"
+          : "${GPLUS_OFFLINE_PYTHON:?GPLUS_OFFLINE_PYTHON is required}"
+          cd "$hermes_source"
+          uv venv --python "$GPLUS_OFFLINE_PYTHON" venv
+          UV_PROJECT_ENVIRONMENT="$hermes_source/venv" UV_PYTHON="$hermes_source/venv/bin/python" \
+            uv sync --extra all --locked
+          test -x "$hermes_source/venv/bin/python"
+          printf 'GPLUS_DESKTOP_ACCEPTANCE_PYTHON=%s\n' "$hermes_source/venv/bin/python" >> "$GITHUB_ENV"
+          echo "Auxiliary acceptance python: $hermes_source/venv/bin/python"
+
       - name: Prepare qshell
         working-directory: source
         shell: bash
