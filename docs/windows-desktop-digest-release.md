@@ -30,9 +30,11 @@ blockmap 和 `latest.yml`。正式发布通过应用的
 ## 来源与版本
 
 Staging 允许从任意分支或提交发行：来源由 canonical annotated tag 的
-`source-ref: origin/<branch>` 和 peeled commit 记录，可回溯到具体源码，因此不限定
-分支。Production 必须使用与 staging 验证相同的提交，并且该提交需先进入
-`master`。`profile=staging` 对应 `channel=staging`，必须使用 `-rc.N` 版本；
+`source-ref: origin/<branch>` 和 peeled commit 记录，可回溯到具体源码，因此不限定分支；
+发布前尽量与最新 `develop` 对齐（推荐，不强制）。Production 必须从 `master` 发布，稳定版
+tag 创建在 `master` 的提交上；staging 与 production **不要求复用同一个提交**（推荐流程是
+staging 验证通过后经 `develop` 合入 `master`，但不强制）。
+`profile=staging` 对应 `channel=staging`，必须使用 `-rc.N` 版本；
 `profile=production` 对应 `channel=prod`，必须使用稳定版本。应用版本、build number、
 源码提交和 canonical annotated tag 必须一致。环境 URL 由现有应用发布器与
 `scripts/publish-windows-digest-release.cjs` 的 profile 映射绑定。

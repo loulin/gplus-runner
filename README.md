@@ -16,9 +16,8 @@ live through the application's Qiniu and Release API publisher.
 
 Source refs are resolved to immutable commits before private checkout. Staging may
 be released from any branch: the canonical annotated tag records
-`source-ref: origin/<branch>` and the peeled commit. Production requires the same
-commit as the validated staging build and a stable version with its own
-Environment credentials.
+`source-ref: origin/<branch>` and the peeled commit. Production is always released
+from `master` and does not have to reuse the staging commit.
 
 Libre Reader and full-workspace transfers use `delivery_mode=handoff`; see
 [Windows handoff](docs/windows-desktop-release-plan.md). Matching hosted runners
