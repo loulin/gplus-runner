@@ -17,6 +17,17 @@ function releaseProfile(profile) {
   ensure(Object.hasOwn(profiles, profile), 'Unsupported release profile');
   return profiles[profile];
 }
+// The application publisher registers a draft candidate by default and only goes live when it is
+// asked to promote. The runner keeps that split explicit: `publish` uploads and registers,
+// `promote` switches the release API record and the canonical feed pointer.
+function promoteRequested(env) {
+  return env.PROMOTE_RELEASE === 'true';
+}
+function expectedPublishState(env) {
+  return promoteRequested(env)
+    ? { manifestStatus: 'published', publishMode: 'promoted', releaseStatus: 'published' }
+    : { manifestStatus: 'candidate', publishMode: 'candidate', releaseStatus: 'draft' };
+}
 function validatePublishInput(handoff, env) {
   const profile = releaseProfile(env.PROFILE);
   ensure(env.PUBLISH_RELEASE === 'true' && env.DELIVERY_MODE === 'digest', 'Publishing requires explicit digest publish operation');
@@ -29,15 +40,27 @@ function validatePublishInput(handoff, env) {
   ensure(env.QINIU_ACCESS_KEY && env.QINIU_SECRET_KEY && env.RELEASE_TOKEN, 'Qiniu and Release API credentials are required');
   return profile;
 }
+function validatePublishResult(handoff, publishResult, env) {
+  const profile = releaseProfile(env.PROFILE);
+  const expected = expectedPublishState(env);
+  ensure(publishResult.dryRun === false, 'Publisher did not confirm the requested release');
+  ensure(publishResult.channel === handoff.channel && publishResult.target === handoff.target && publishResult.version === handoff.version && publishResult.buildNumber === handoff.buildNumber, 'Publisher did not confirm the requested release');
+  ensure(publishResult.release?.code === handoff.buildNumber, 'Publisher did not confirm the requested release');
+  ensure(publishResult.release?.status === expected.releaseStatus, `Publisher release status must be ${expected.releaseStatus} for this operation`);
+  ensure(publishResult.manifest?.status === expected.manifestStatus, `Publisher manifest status must be ${expected.manifestStatus} for this operation`);
+  ensure(publishResult.publishMode === expected.publishMode, `Publisher mode must be ${expected.publishMode} for this operation`);
+  ensure(publishResult.releaseApi === 'on', 'Publisher must run with the release API enabled');
+  return profile;
+}
 function publisherInvocation({ handoff, workRoot, releaseDir, publishWork, signerSubjectName, env }) {
   const profile = validatePublishInput(handoff, env);
   const provenance = handoff.sourceProvenance;
   const resolvedSignerSubjectName = requiredSignerSubjectName(signerSubjectName);
+  const args = [path.join(workRoot, 'apps/gplus-bot-desktop/scripts/release-gplus-desktop-update.mjs'), '--target', handoff.target, '--channel', profile.channel, '--version', handoff.version, '--package-json', path.join(workRoot, 'apps/gplus-bot-desktop/package.json'), '--skip-build', '--base-url', profile.baseUrl];
+  // Promotion is opt-in: without the flag the publisher stops at the draft candidate.
+  if (promoteRequested(env)) args.push('--promote');
   return {
-    // The application publisher keeps draft, one-click, and remote promotion as explicit paths and
-    // defaults to a draft candidate. `publish=true` means this target goes live, so the promotion
-    // flag mirrors the application's own handoff finalize path instead of relying on a default.
-    args: [path.join(workRoot, 'apps/gplus-bot-desktop/scripts/release-gplus-desktop-update.mjs'), '--target', handoff.target, '--channel', profile.channel, '--version', handoff.version, '--package-json', path.join(workRoot, 'apps/gplus-bot-desktop/package.json'), '--skip-build', '--base-url', profile.baseUrl, '--promote'],
+    args,
     options: {
       cwd: workRoot,
       stdio: 'inherit',
@@ -77,7 +100,7 @@ async function publishSignedRelease(input) {
   if (result.error) throw result.error;
   ensure(result.status === 0, `Gplus Desktop publisher failed: exit ${result.status}`);
   const publishResult = JSON.parse(fs.readFileSync(path.join(publishWork, 'publish-result.json'), 'utf8'));
-  ensure(publishResult.dryRun === false && publishResult.manifest?.status === 'published' && publishResult.channel === handoff.channel && publishResult.target === handoff.target && publishResult.version === handoff.version && publishResult.buildNumber === handoff.buildNumber && publishResult.release?.code === handoff.buildNumber, 'Publisher did not confirm the requested release');
+  validatePublishResult(handoff, publishResult, input.env);
   return { runtimeEvidence, ...publishResult };
 }
-module.exports = { releaseProfile, validatePublishInput, publisherInvocation, publishSignedRelease };
+module.exports = { releaseProfile, promoteRequested, expectedPublishState, validatePublishInput, validatePublishResult, publisherInvocation, publishSignedRelease };

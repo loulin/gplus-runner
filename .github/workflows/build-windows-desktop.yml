@@ -43,6 +43,11 @@ on:
         required: true
         default: false
         type: boolean
+      promote:
+        description: Promote the published candidate to the channel pointer (requires publish)
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -67,6 +72,7 @@ jobs:
       HANDOFF_ENCRYPTION: ${{ inputs.handoff_encryption }}
       DELIVERY_MODE: ${{ inputs.delivery_mode }}
       PUBLISH_RELEASE: ${{ inputs.publish }}
+      PROMOTE_RELEASE: ${{ inputs.promote }}
     steps:
       - name: Checkout runner repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -77,6 +83,7 @@ jobs:
         shell: pwsh
         run: |
           if ($env:PUBLISH_RELEASE -eq 'true' -and $env:DELIVERY_MODE -ne 'digest') { throw 'publish requires digest delivery mode' }
+          if ($env:PROMOTE_RELEASE -eq 'true' -and $env:PUBLISH_RELEASE -ne 'true') { throw 'promote requires publish' }
           if ($env:DELIVERY_MODE -eq 'digest' -and ($env:APPLICATION -ne 'gplus-bot-desktop' -or $env:TARGET -ne 'win-x64')) { throw 'Digest signing supports Gplus Bot Desktop win-x64' }
 
       - name: Create read-only source token

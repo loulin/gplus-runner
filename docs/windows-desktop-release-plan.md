@@ -485,9 +485,12 @@ apps/gplus-bot-desktop/scripts/verify-gplus-desktop-release.mjs
 
 推荐顺序：
 
-1. 在私有 `develop` 上按私有仓库版本脚本生成 RC version/build number 和 annotated tag。
-2. 使用完整 tag commit SHA 触发 hosted Windows handoff。
+1. 按私有仓库版本脚本生成 RC version/build number 和 annotated tag。Staging 可以从任意
+   分支或提交发行，不限定分支：来源由 canonical annotated tag 的 `source-ref: origin/<branch>`
+   与 peeled commit 记录，足以回溯到具体源码；生产发布再复用同一提交（该提交需先进入 `master`）。
+2. 使用完整 tag commit SHA 触发 hosted Windows handoff（或 `delivery_mode=digest` 的摘要签名流程）。
 3. 本地 Windows 解密、签名、重新生成 metadata、上传 staging 七牛并登记 staging Release API。
+   默认登记为 `draft` 候选；需要上线时显式 `-f promote=true`。
 4. 在匹配的 Windows 机器上验证 RC1 -> RC2 的 auto-update 安装替换。
 5. 所有 target 完成后运行私有仓库 `release:verify -- --tag <tag>` closeout。
 

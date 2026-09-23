@@ -9,13 +9,16 @@ documents; the application source remains private.
 [Windows Desktop Release](docs/windows-desktop-digest-release.md) uses three
 digest-signing rounds for Gplus Bot Desktop win-x64. GitHub keeps the full build;
 the local SimplySign machine receives only digests and returns signed responses.
-Set `delivery_mode=digest` and `publish=true` to publish verified packages through
-the application's existing Qiniu and Release API publisher. The default
-`publish=false` verifies signatures and packaging without publishing.
+`publish=false` (default) only verifies signatures and packaging. `publish=true`
+uploads the immutable objects and registers the version as a **draft candidate**
+without moving the channel pointer; add `promote=true` to promote that candidate
+live through the application's Qiniu and Release API publisher.
 
-Source refs are resolved to immutable commits before private checkout. Publishing
-requires matching canonical annotated tag provenance. Staging uses RC versions;
-Production uses stable versions and its own Environment credentials.
+Source refs are resolved to immutable commits before private checkout. Staging may
+be released from any branch: the canonical annotated tag records
+`source-ref: origin/<branch>` and the peeled commit. Production requires the same
+commit as the validated staging build and a stable version with its own
+Environment credentials.
 
 Libre Reader and full-workspace transfers use `delivery_mode=handoff`; see
 [Windows handoff](docs/windows-desktop-release-plan.md). Matching hosted runners
