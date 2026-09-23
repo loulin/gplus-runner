@@ -151,6 +151,7 @@ async function main() {
   ensure(process.env.APPLICATION === 'gplus-bot-desktop' && process.env.TARGET === 'win-x64' && process.env.DELIVERY_MODE === 'digest', 'Digest signing supports Gplus Bot Desktop win-x64');
   const profile = releaseProfile(process.env.PROFILE);
   const publishRequested = process.env.PUBLISH_RELEASE === 'true';
+  const promoteRequested = process.env.PROMOTE_RELEASE === 'true';
   ensure(process.env.QINIU_ACCESS_KEY && process.env.QINIU_SECRET_KEY, 'Qiniu callback credentials are required');
   fs.mkdirSync(root, { recursive: true });
   const source = path.join(process.env.GITHUB_WORKSPACE, 'source');
@@ -215,12 +216,14 @@ async function main() {
   const receipt = { ...json(statePath), signToolVersion: ps('(Get-Item -LiteralPath $env:POC_TOOL).VersionInfo.FileVersion', { POC_TOOL: signTool }).trim(), sourceSha: process.env.SOURCE_SHA, workflowRevision: process.env.GITHUB_SHA, packageMode: 'signed-digest-poc', published: false, zipVerifiedEntries: signedHashes.size + 1, artifacts: [...installers, ...zips, installers[0] + '.blockmap', path.join(release, 'latest.yml')].map(file => ({ name: path.basename(file), size: fs.statSync(file).size, sha256: hash(file), sha512: hash(file, 'sha512', 'base64') })) };
   receipt.packageMode = 'signed-digest';
   receipt.publishRequested = publishRequested;
+  receipt.promoteRequested = promoteRequested;
   const receiptPath = path.join(root, 'digest-release-receipt.json');
   save(receiptPath, receipt);
   try {
     if (publishRequested) {
       receipt.publishResult = await publishSignedRelease({ handoff, workRoot: path.resolve(desktop, '../..'), releaseDir: release, publishWork: path.join(root, 'publish-work'), signerSubjectName, env: process.env });
-      receipt.published = true;
+      // A published candidate does not move the channel pointer; only promotion does.
+      receipt.published = receipt.publishResult.manifest?.status === 'published';
       save(receiptPath, receipt);
     }
   } finally {

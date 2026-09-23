@@ -1,8 +1,17 @@
 # Windows Desktop 摘要签名发布
 
 `build-windows-desktop.yml` 的 `delivery_mode=digest` 是 Gplus Bot Desktop
-`win-x64` 的签名打包入口。`publish=false` 只验证签名和打包；`publish=true`
-调用应用高层发布器，将最终产物发布到所选 Environment。默认不发布。
+`win-x64` 的签名打包入口。发布分两步，默认只走第一步：
+
+| 输入 | 效果 |
+| --- | --- |
+| 默认（`publish=false`） | 只验证签名和打包，不上传、不登记 |
+| `publish=true` | 上传不可变对象并把该版本登记为 **draft 候选**（Release API `draft`，canonical 指针不变） |
+| `publish=true` + `promote=true` | 在候选基础上**显式晋升上线**（Release API `published` 并切换 canonical 指针） |
+
+`promote=true` 必须与 `publish=true` 同时使用。Staging 验收默认停在候选即可；
+只有明确要上线时才加 `promote=true`。Gplus Runner 侧不隐式晋升，
+应用发布器的默认值也是草稿。
 
 ## 执行边界
 
@@ -15,7 +24,18 @@
 blockmap 和 `latest.yml`。正式发布通过应用的
 `release-gplus-desktop-update.mjs --skip-build`，不重建已签名产物。
 发布器负责 immutable create-only、公开 HEAD 校验、Release API upsert/latest
-回读，最后更新 target manifest；任一步失败都停止，不切换 unsigned。
+回读，候选阶段到此为止；只有显式晋升才继续切换 target manifest。任一步失败都停止，
+不切换 unsigned。
+
+## 来源与版本
+
+Staging 允许从任意分支或提交发行：来源由 canonical annotated tag 的
+`source-ref: origin/<branch>` 和 peeled commit 记录，可回溯到具体源码，因此不限定
+分支。Production 必须使用与 staging 验证相同的提交，并且该提交需先进入
+`master`。`profile=staging` 对应 `channel=staging`，必须使用 `-rc.N` 版本；
+`profile=production` 对应 `channel=prod`，必须使用稳定版本。应用版本、build number、
+源码提交和 canonical annotated tag 必须一致。环境 URL 由现有应用发布器与
+`scripts/publish-windows-digest-release.cjs` 的 profile 映射绑定。
 
 发布时 runner 把内置摘要签名证书的 Subject CN 作为 `WIN_CSC_SUBJECT_NAME` 注入应用发布器，
 使生产 Windows 的签名门禁按真实签名的安装包执行 Authenticode 校验；该值取自
@@ -37,6 +57,8 @@ blockmap 和 `latest.yml`。正式发布通过应用的
 
 ## 云端命令
 
+候选（默认，登记 draft，不上线）：
+
 ```powershell
 gh workflow run build-windows-desktop.yml --repo loulin/gplus-runner `
   --ref main `
@@ -45,7 +67,19 @@ gh workflow run build-windows-desktop.yml --repo loulin/gplus-runner `
   -f delivery_mode=digest -f publish=true
 ```
 
-无发布验证使用 `publish=false`。`handoff_encryption` 仅影响 `delivery_mode=handoff`。
+晋升上线（在上面基础上显式加 `promote`）：
+
+```powershell
+gh workflow run build-windows-desktop.yml --repo loulin/gplus-runner `
+  --ref main `
+  -f application=gplus-bot-desktop -f profile=staging -f target=win-x64 `
+  -f source_ref=<完整应用提交SHA> -f handoff_encryption=none `
+  -f delivery_mode=digest -f publish=true -f promote=true
+```
+
+只做签名与打包验证使用 `publish=false`。`source_ref` 用 canonical tag 的 peeled
+commit；tag 未推送时 `publish=true` 会因缺少 provenance 而失败。
+`handoff_encryption` 仅影响 `delivery_mode=handoff`。
 Libre Reader 使用 handoff 模式，命令见 [Windows handoff](windows-desktop-release-plan.md)。
 
 ## 本地签名
