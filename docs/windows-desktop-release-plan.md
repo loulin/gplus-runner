@@ -487,7 +487,8 @@ apps/gplus-bot-desktop/scripts/verify-gplus-desktop-release.mjs
 
 1. 按私有仓库版本脚本生成 RC version/build number 和 annotated tag。Staging 可以从任意
    分支或提交发行，不限定分支：来源由 canonical annotated tag 的 `source-ref: origin/<branch>`
-   与 peeled commit 记录，足以回溯到具体源码；生产发布再复用同一提交（该提交需先进入 `master`）。
+   与 peeled commit 记录，足以回溯到具体源码；发布前尽量与最新 `develop` 对齐（推荐，不强制）。
+   Production 必须从 `master` 发布，与 staging 不要求复用同一提交。
 2. 使用完整 tag commit SHA 触发 hosted Windows handoff（或 `delivery_mode=digest` 的摘要签名流程）。
 3. 本地 Windows 解密、签名、重新生成 metadata、上传 staging 七牛并登记 staging Release API。
    默认登记为 `draft` 候选；需要上线时显式 `-f promote=true`。
