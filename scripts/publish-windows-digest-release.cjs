@@ -34,7 +34,10 @@ function publisherInvocation({ handoff, workRoot, releaseDir, publishWork, signe
   const provenance = handoff.sourceProvenance;
   const resolvedSignerSubjectName = requiredSignerSubjectName(signerSubjectName);
   return {
-    args: [path.join(workRoot, 'apps/gplus-bot-desktop/scripts/release-gplus-desktop-update.mjs'), '--target', handoff.target, '--channel', profile.channel, '--version', handoff.version, '--package-json', path.join(workRoot, 'apps/gplus-bot-desktop/package.json'), '--skip-build', '--base-url', profile.baseUrl],
+    // The application publisher keeps draft, one-click, and remote promotion as explicit paths and
+    // defaults to a draft candidate. `publish=true` means this target goes live, so the promotion
+    // flag mirrors the application's own handoff finalize path instead of relying on a default.
+    args: [path.join(workRoot, 'apps/gplus-bot-desktop/scripts/release-gplus-desktop-update.mjs'), '--target', handoff.target, '--channel', profile.channel, '--version', handoff.version, '--package-json', path.join(workRoot, 'apps/gplus-bot-desktop/package.json'), '--skip-build', '--base-url', profile.baseUrl, '--promote'],
     options: {
       cwd: workRoot,
       stdio: 'inherit',
