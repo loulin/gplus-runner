@@ -12,6 +12,8 @@ for (const profile of ['staging', 'production']) test(`${profile} publishes exis
   const input = fixture(profile);
   const { args, options } = publisherInvocation(input);
   assert.ok(args.includes('--skip-build'));
+  // The application publisher defaults to a draft candidate; publish=true must promote explicitly.
+  assert.ok(args.includes('--promote'));
   assert.equal(args[args.indexOf('--channel') + 1], input.handoff.channel);
   assert.equal(options.env.GPLUS_DESKTOP_UNSIGNED, '0');
   assert.equal(options.env.GPLUS_DESKTOP_RELEASE_DIR, input.releaseDir);
