@@ -250,10 +250,20 @@ corepack pnpm --filter gplus-bot-desktop run release:finalize-handoff -- `
 
 Use `--filter libre-reader` for Libre Reader and set `--profile production`
 only for a production handoff. Finalize requires matching Windows/Node
-architecture, SimplySign with `WIN_CSC_SUBJECT_NAME`, and the existing Qiniu
-and Release API credentials. Gplus Desktop's publisher also requires Git Bash
-(`bash.exe`) on `PATH`. `--unsigned` is an explicit diagnostic bypass and is
-never publishable; signing failure never falls back to it.
+architecture, a connected SimplySign session with `WIN_CSC_SUBJECT_NAME`, and
+the existing Qiniu and Release API credentials. Connect SimplySign first, from
+the same application checkout (Git Bash; credentials come from Infisical
+`/common/signing/certum`, are never written to disk or argv, and the TOTP is
+generated in memory):
+
+```bash
+./scripts/dev/credentials.sh run --profile signing -- \
+  node ./scripts/dev/connect-simplysign.mjs
+```
+
+Gplus Desktop's publisher also requires Git Bash (`bash.exe`) on `PATH`.
+`--unsigned` is an explicit diagnostic bypass and is never publishable;
+signing failure never falls back to it.
 
 Add `--publish` only when the handoff source SHA is the peeled commit of the
 application's canonical annotated staging/production release Tag. A handoff

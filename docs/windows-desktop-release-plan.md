@@ -385,7 +385,12 @@ GitHub。Production recipient 应使用 GitHub Environment 的受保护配置，
 
 - 与 target 匹配的 Windows 架构和 Node 架构；`win-x64` 至少使用 Windows x64 + Node x64。
 - age 解密私钥，且文件 ACL 仅允许当前用户、SYSTEM 和 Administrators。
-- Certum SimplySign Desktop 已登录，代码签名证书出现在当前用户证书库。
+- Certum SimplySign Desktop 已安装；登录由签名机自动化完成，不需要人工点托盘或输入 token：
+  用私有仓库的 `signing` profile 现场生成 TOTP 并连接
+  （`./scripts/dev/credentials.sh run --profile signing -- node ./scripts/dev/connect-simplysign.mjs`），
+  连接成功后代码签名证书出现在当前用户证书库。机器身份（Windows 凭据管理器
+  `infisical/gplus/client-id`、`infisical/gplus/client-secret`）与 vault 路径
+  `/common/signing/certum` 见[developer credentials](https://github.com/loulin/gplus/blob/develop/docs/development/developer-credentials.md)。
 - 通过 `WIN_CSC_SUBJECT_NAME` 固定 signer subject；不能在脚本中猜测证书。
 - `signtool.exe`、Node、pnpm、`qshell` 和仓库发布脚本。
 - Git Bash (`bash.exe`) 在 `PATH` 中；Gplus Desktop 的现有发布器通过 Bash
@@ -401,7 +406,13 @@ WIN_CSC_SUBJECT_NAME
 WIN_CSC_FILE + WIN_CSC_KEY_PASSWORD  (仅在选择 PFX 模式时)
 QINIU_ACCESS_KEY / QINIU_SECRET_KEY
 RELEASE_TOKEN
+SIMPLYSIGN_ACCOUNT
+SIMPLYSIGN_TOTP_URI / SIMPLYSIGN_TOTP_SECRET
+SIMPLYSIGN_TOTP_ALGORITHM / SIMPLYSIGN_TOTP_DIGITS / SIMPLYSIGN_TOTP_PERIOD
 ```
+
+最后三项 `SIMPLYSIGN_TOTP_*` 属于 `signing` profile（Infisical `/common/signing/certum`），
+只在连接 SimplySign Desktop 时由 `connect:simplysign` 读取并现场生成动态码。
 
 本文不记录这些值。
 
@@ -410,7 +421,17 @@ RELEASE_TOKEN
 签名机先校验公开 manifest 中 payload 的 SHA-256，再按 handoff 模式处理：age 使用与
 handoff `profile` 对应的本地 age 私钥解密，none 直接解包 `handoff.zip`。解密 key 路径固定为上节列出的 profile 路径。
 解包目录必须包含 `handoff-manifest.json` 和对应 `payload/`，然后从同一私有仓库
-checkout 执行应用 adapter：
+checkout 执行应用 adapter。finalize 之前先在同一个 checkout 里连接 SimplySign
+（Git Bash；凭据从 Infisical 注入，不落盘、不经 argv）：
+
+```bash
+./scripts/dev/credentials.sh run --profile signing -- \
+  node ./scripts/dev/connect-simplysign.mjs
+```
+
+连接失败时按输出的 `SIMPLYSIGN_REASON` 处理（`login_failed` = token 被拒，需确认 vault 中的
+扫码密钥与当前 SimplySign 激活一致；`login_window_unavailable` = 会话已连接或其他窗口阻塞），
+不要重试或改用 unsigned。连接成功后再执行应用 adapter：
 
 ```powershell
 $profile = 'staging' # production handoff 使用 'production'
