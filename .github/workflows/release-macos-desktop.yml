@@ -84,6 +84,14 @@ jobs:
           node-version: '24'
           architecture: ${{ inputs.target == 'mac-arm64' && 'arm64' || 'x64' }}
 
+      - name: Setup modern Bash
+        run: |
+          set -euo pipefail
+          brew install bash
+          brew_prefix="$(brew --prefix)"
+          echo "$brew_prefix/bin" >> "$GITHUB_PATH"
+          "$brew_prefix/bin/bash" --version
+
       - name: Prepare locked Hermes source
         if: inputs.application == 'gplus-bot-desktop'
         env:
