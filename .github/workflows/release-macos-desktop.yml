@@ -25,6 +25,16 @@ on:
         default: mac-arm64
         type: choice
         options: [mac-arm64, mac-x64]
+      runner:
+        description: >-
+          mac-arm64: self-hosted-arm64 runs on the gplus self-hosted Apple Silicon
+          machine (labels self-hosted, macOS, ARM64, gplus-macos); hosted runs on
+          macos-15. mac-x64 always uses macos-15-intel because no Intel self-hosted
+          runner is registered.
+        required: true
+        default: self-hosted-arm64
+        type: choice
+        options: [self-hosted-arm64, hosted]
 
 permissions:
   contents: read
@@ -34,9 +44,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  validate:
+    name: Validate runner selection
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reject unsupported runner/target combinations
+        shell: bash
+        env:
+          TARGET: ${{ inputs.target }}
+          RUNNER_KIND: ${{ inputs.runner }}
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            mac-arm64)
+              case "$RUNNER_KIND" in
+                self-hosted-arm64|hosted) ;;
+                *) echo "unsupported runner for mac-arm64: $RUNNER_KIND" >&2; exit 1 ;;
+              esac
+              ;;
+            mac-x64)
+              # x64 需要原生 Intel：自托管 Mac 是 arm64，交叉构建被架构门禁拒绝，
+              # 因此 mac-x64 只能走 GitHub-hosted 的 macos-15-intel。
+              if [[ "$RUNNER_KIND" != "hosted" ]]; then
+                echo "mac-x64 only supports the hosted macos-15-intel runner; got $RUNNER_KIND" >&2
+                exit 1
+              fi
+              ;;
+            *) echo "unsupported target: $TARGET" >&2; exit 1 ;;
+          esac
+          echo "runner selection ok: target=$TARGET runner=$RUNNER_KIND"
+
   release:
     name: Publish macOS Desktop release
-    runs-on: ${{ inputs.target == 'mac-arm64' && 'macos-15' || 'macos-15-intel' }}
+    needs: validate
+    runs-on: ${{ inputs.target == 'mac-x64' && 'macos-15-intel' || (inputs.runner == 'self-hosted-arm64' && fromJSON('["self-hosted","macOS","ARM64","gplus-macos"]') || 'macos-15') }}
     environment: ${{ inputs.profile }}
     timeout-minutes: 360
     env:
