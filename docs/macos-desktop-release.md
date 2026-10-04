@@ -169,6 +169,30 @@ refresh, and Release API registration. The job summary records the app,
 profile, target, tag object, source SHA, source ref, version, and build number.
 No installer is uploaded as a GitHub Actions artifact.
 
+## Receipt collection and runner allocation
+
+This workflow intentionally does not upload a release-receipt artifact: the
+canonical receipt is the immutable object published at
+`<app-base>/<channel>/<target>/<version>/release-receipt.json`. Receipts for one
+version across every platform are collected by the `loulin/gplus` workflow
+`desktop-release-receipts.yml` (manual dispatch, GitHub-hosted `ubuntu-latest`,
+no signing credentials):
+
+```bash
+gh workflow run desktop-release-receipts.yml --repo loulin/gplus --ref develop \
+  -f release_tag=gplus-bot-desktop-vX.Y.Z-rc.N -f profile=staging
+```
+
+That collector is idempotent and reads only the published feed, so it can be
+rerun at any time and never hits the create-only `immutable-conflict` guard.
+Run it after every target's publish workflow has finished. Do not rerun this
+macOS workflow just to produce a receipt for an already-published tag.
+
+`loulin/gplus` owns the per-target dispatch matrix (`release:dispatch`): macOS
+targets are dispatched here, `win-x64` to the self-hosted SimplySign host in
+`loulin/gplus`. Always pick `mac-x64` on `macos-15-intel`; the self-hosted macOS
+runner is arm64 and the architecture gate rejects cross-building.
+
 ## Failure handling
 
 The workflow fails closed at each boundary:
