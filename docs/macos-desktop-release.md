@@ -13,10 +13,11 @@ tag: canonical annotated release tag in loulin/gplus
 
 The workflow runs on a matching native host:
 
-| Target | GitHub runner | Node architecture |
-| --- | --- | --- |
-| `mac-arm64` | `macos-15` | `arm64` |
-| `mac-x64` | `macos-15-intel` | `x64` |
+| Target | `runner` input | GitHub runner | Node architecture |
+| --- | --- | --- | --- |
+| `mac-arm64` | `self-hosted-arm64` (default) | `[self-hosted, macOS, ARM64, gplus-macos]` | `arm64` |
+| `mac-arm64` | `hosted` | `macos-15` | `arm64` |
+| `mac-x64` | `hosted` (only) | `macos-15-intel` | `x64` |
 
 Cross-building is rejected. A run performs the following complete path:
 
@@ -168,6 +169,29 @@ A successful run has performed signing, notarization, Qiniu publication, CDN
 refresh, and Release API registration. The job summary records the app,
 profile, target, tag object, source SHA, source ref, version, and build number.
 No installer is uploaded as a GitHub Actions artifact.
+
+### Self-hosted Apple Silicon runner
+
+`mac-arm64` defaults to the gplus self-hosted Apple Silicon machine. That runner is
+currently registered to the private `loulin/gplus` repository, and GitHub
+repository-scoped runners only serve workflows in the repository they are
+registered to. Register the same machine to this repository as well (a second
+registration is additive; the existing one keeps working):
+
+```bash
+# On the Apple Silicon build machine, in a separate runner directory:
+#   1. create the registration token
+gh api -X POST repos/loulin/gplus-runner/actions/runners/registration-token --jq .token
+#   2. configure and start
+./config.sh --url https://github.com/loulin/gplus-runner \
+  --token <token> --name gplus-macos-williamsun --labels macOS,ARM64,gplus-macos --unattended
+./run.sh
+```
+
+Until that registration exists, dispatching `runner=self-hosted-arm64` leaves the
+job waiting for a matching runner; use `runner=hosted` to publish on `macos-15`
+instead. `mac-x64` never uses the self-hosted machine: it is arm64 and the
+architecture gate rejects cross-building.
 
 ## Receipt collection and runner allocation
 
