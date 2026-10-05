@@ -281,6 +281,10 @@ jobs:
             corepack pnpm --filter '@gplus/bot-contracts' run build
           else
             corepack pnpm install --filter 'libre-reader...' --recursive --frozen-lockfile --ignore-scripts --prefer-offline
+            # Libre Reader 的 release-local 在模块加载期经 release-profiles -> sentry-build-identity
+            # 直接 require('@gplus/sentry-config')，其 dist 由 prepare 生成、被 --ignore-scripts 跳过；
+            # 与 loulin/gplus 的 release-macos-desktop-self-hosted.yml / release-windows-libre-reader.yml 同源。
+            corepack pnpm --filter '@gplus/sentry-config' run build
           fi
 
       - name: Provision auxiliary acceptance runtime
