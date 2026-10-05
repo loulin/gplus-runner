@@ -88,16 +88,21 @@ path directly and does not need Match to fetch a signing identity.
 Gplus Bot Desktop uses:
 
 ```text
-staging:    gplus-bot-desktop-vX.Y.Z-rc.N
+staging:    gplus-bot-desktop-vX.Y.Z-staging.N
 production: gplus-bot-desktop-vX.Y.Z
 ```
+
+Gplus Bot Desktop 的历史 staging tag `gplus-bot-desktop-vX.Y.Z-rc.N` 读取路径继续接受
+（既有 tag/对象不可变）；新发布一律使用 `-staging.N`。
 
 Libre Reader uses:
 
 ```text
-staging:    libre-reader-vX.Y.Z-staging
+staging:    libre-reader-vX.Y.Z-staging.N
 production: libre-reader-vX.Y.Z
 ```
+
+Libre Reader 的历史 staging tag `libre-reader-vX.Y.Z-staging`（无计数器）读取路径继续接受。
 
 The tag must be annotated. Before any dependency installation or publishing,
 the workflow verifies the raw tag object ID and peeled commit against
