@@ -380,6 +380,9 @@ jobs:
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
           RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          # Libre Reader 的 staging/production 构建要求 SENTRY_DSN（Gplus Bot Desktop 不需要）；
+          # 与 loulin/gplus 的 desktop-release/<env>/libre-reader identity 同源。
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
         run: |
           set -euo pipefail
           : "${ASC_ISSUER_ID:?ASC_ISSUER_ID is required}"

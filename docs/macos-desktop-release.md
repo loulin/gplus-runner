@@ -61,7 +61,11 @@ QINIU_ACCESS_KEY
 QINIU_SECRET_KEY
 RELEASE_TOKEN
 HERMES_SOURCE_SSH_KEY
+SENTRY_DSN
 ```
+
+`SENTRY_DSN` 只被 Libre Reader 的 staging/production 构建消费（Gplus Bot Desktop 不需要），
+取值与 `loulin/gplus` 的 `desktop-release/<staging|prod>/libre-reader` identity 中同名变量一致。
 
 `ASC_KEY_P8_B64` is the base64 encoding of the App Store Connect API key file.
 `MAC_DEVELOPER_ID_P12_B64` is the base64 encoding of the Developer ID
