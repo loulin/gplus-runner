@@ -110,15 +110,20 @@ function assertSourceRef(value, application) {
 }
 
 function resolveIdentity(application, profile, tag) {
+  // 版本号规则与 loulin/gplus 的 Desktop 发布矩阵一致：staging 为 X.Y.Z-staging.N，
+  // production 为 X.Y.Z。历史 staging 形态（gplus-bot-desktop 的 -rc.N、libre-reader 的
+  // 无计数器 -staging）读取路径继续接受，新写入一律为 -staging.N。
+  const stable = '(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)';
   const pattern = application === 'gplus-bot-desktop'
-    ? /^gplus-bot-desktop-v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-rc\.[1-9]\d*)?)$/u
-    : /^libre-reader-v((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-staging)?)$/u;
+    ? new RegExp(`^gplus-bot-desktop-v(${stable}(?:-(?:staging|rc)\\.[1-9]\\d*)?)$`, 'u')
+    : new RegExp(`^libre-reader-v(${stable}(?:-staging(?:\\.[1-9]\\d*)?)?)$`, 'u');
   const match = pattern.exec(tag);
   if (!match) fail(`tag 不是 ${application} 的 canonical release tag: ${tag}`);
   const version = match[1];
-  const tagProfile = application === 'gplus-bot-desktop'
-    ? (version.includes('-rc.') ? 'staging' : 'production')
-    : (version.endsWith('-staging') ? 'staging' : 'production');
+  const stagingVersionPattern = application === 'gplus-bot-desktop'
+    ? /-(?:staging|rc)\.[1-9]\d*$/u
+    : /-staging(?:\.[1-9]\d*)?$/u;
+  const tagProfile = stagingVersionPattern.test(version) ? 'staging' : 'production';
   if (tagProfile !== profile) {
     fail(`tag profile 与输入不匹配: tag=${tagProfile}, input=${profile}`);
   }
