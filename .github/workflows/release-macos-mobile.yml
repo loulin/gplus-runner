@@ -1,0 +1,319 @@
+name: macOS Mobile Release
+
+# 移动端（Android + iOS）在 hosted macOS 上的发布入口，与 release-macos-desktop.yml 同构：
+# 本仓库只做编排，检出 loulin/gplus 的发布 Tag 后调用同一套 scripts/mobile，不复制构建实现。
+#
+# 与桌面端的唯一区别：移动端发布记录写在 loulin/gplus 的 Draft Release 上，因此需要一份对
+# 该仓库有 contents: write 的身份（见 docs/development/mobile/release-automation.md）。
+#
+# 运行面真源见 loulin/gplus 的 docs/development/mobile/release-automation.md；分工见
+# docs/development/desktop-release-matrix.md 的命名约定（release-<os>-<用途>.yml）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      application:
+        description: Application to publish
+        required: true
+        default: gplus-customer-app
+        type: choice
+        options: [gplus-customer-app, gplus-customer-pro-app, gplus-clinician-app]
+      profile:
+        description: Release profile
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      tag:
+        description: Canonical annotated mobile release tag in loulin/gplus (mobile/<app>/vX.Y.Z)
+        required: true
+        type: string
+      platforms:
+        description: Which platforms to build and publish
+        required: true
+        default: all
+        type: choice
+        options: [all, android, ios]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-mobile-${{ inputs.application }}-${{ inputs.profile }}-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: Validate mobile release inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Reject unsupported platform/profile combinations
+        shell: bash
+        env:
+          APPLICATION: ${{ inputs.application }}
+          PROFILE: ${{ inputs.profile }}
+          PLATFORMS: ${{ inputs.platforms }}
+        run: |
+          set -euo pipefail
+          case "$APPLICATION" in
+            gplus-customer-app|gplus-customer-pro-app|gplus-clinician-app) ;;
+            *) echo "unsupported application: $APPLICATION" >&2; exit 1 ;;
+          esac
+          case "$PLATFORMS" in
+            all|android|ios) ;;
+            *) echo "unsupported platforms: $PLATFORMS" >&2; exit 1 ;;
+          esac
+          # Android 生产签名需要 signing.keystore 二进制，本仓库的 Environment secrets 里没有，
+          # 而 Infisical 只承载文本凭据。生产 Android 明确留给 loulin/gplus 的宿主运行面，
+          # 在这里 fail fast 而不是构建出未签名的包。
+          if [[ "$PROFILE" == 'production' && "$PLATFORMS" != 'ios' ]]; then
+            echo "production Android signing is not available on this runner; use the loulin/gplus self-hosted runner" >&2
+            exit 1
+          fi
+          echo "mobile release inputs ok: application=$APPLICATION profile=$PROFILE platforms=$PLATFORMS"
+
+  release:
+    name: Build and publish mobile release
+    needs: validate
+    runs-on: macos-15
+    environment: ${{ inputs.profile }}
+    timeout-minutes: 240
+    env:
+      CI: 'true'
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+      APPLICATION: ${{ inputs.application }}
+      PROFILE: ${{ inputs.profile }}
+      TAG: ${{ inputs.tag }}
+      PLATFORMS: ${{ inputs.platforms }}
+      FLUTTER_VERSION: '3.44.8'
+    steps:
+      - name: Checkout runner repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 一次取 token：checkout 源码需要 contents: read，写回 Draft 需要 contents: write。
+      # 若该 GitHub App 没有 contents: write，这一步会直接失败，而不是悄悄跳过发布记录。
+      - name: Create source token
+        id: source-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
+          private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
+          owner: loulin
+          repositories: gplus
+          permission-contents: write
+
+      - name: Checkout private source at release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: loulin/gplus
+          ref: ${{ inputs.tag }}
+          token: ${{ steps.source-token.outputs.token }}
+          path: source
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+          architecture: arm64
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - name: Setup Ruby (fastlane)
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: '4.0'
+          bundler: '2.7.2'
+          bundler-cache: false
+
+      - name: Setup Java
+        uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve release identity and draft plan
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+        working-directory: source
+        run: |
+          set -euo pipefail
+
+          if ! identity="$(node scripts/mobile/resolve-release-tag.mjs "$TAG")"; then
+            echo "Invalid mobile release Tag: $TAG" >&2
+            exit 1
+          fi
+          IFS=$'\t' read -r resolved_app _version _base_version env_name prerelease _github_env \
+            <<< "$identity"
+
+          if [[ "$resolved_app" != "$APPLICATION" ]]; then
+            echo "Tag app ($resolved_app) does not match requested application ($APPLICATION)" >&2
+            exit 1
+          fi
+          expected_env="$PROFILE"
+          [[ "$expected_env" == 'production' ]] && expected_env='prod'
+          if [[ "$env_name" != "$expected_env" ]]; then
+            echo "Tag environment ($env_name) does not match profile ($PROFILE)" >&2
+            exit 1
+          fi
+
+          source_sha="$(git rev-parse --verify HEAD^{commit})"
+          readiness="$(bash scripts/mobile/wait-for-mobile-release-ready.sh \
+            "$TAG" "$source_sha" "$resolved_app")"
+          IFS=$'\t' read -r \
+            build_number android_planned ios_planned android_units ios_units \
+            <<< "$readiness"
+
+          {
+            printf 'app=%s\n' "$resolved_app"
+            printf 'env=%s\n' "$env_name"
+            printf 'build_number=%s\n' "$build_number"
+            printf 'android_planned=%s\n' "$android_planned"
+            printf 'ios_planned=%s\n' "$ios_planned"
+            printf 'android_units=%s\n' "$android_units"
+            printf 'ios_units=%s\n' "$ios_units"
+          } >> "$GITHUB_OUTPUT"
+          echo "resolved: app=$resolved_app env=$env_name build=$build_number android=$android_planned ios=$ios_planned"
+
+      - name: Install release record dependencies
+        working-directory: source
+        run: |
+          set -euo pipefail
+          corepack pnpm install --frozen-lockfile --ignore-scripts --filter @gplus/release-records
+          corepack pnpm --filter @gplus/release-records build
+
+      - name: Run mobile platform
+        id: build
+        continue-on-error: true
+        shell: bash
+        working-directory: source
+        env:
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          # 上传成功与否由 mobile.sh 自己判定并写进不可变结果；这里不做二次推断。
+          RESOLVED_APP: ${{ steps.resolve.outputs.app }}
+          RESOLVED_ENV: ${{ steps.resolve.outputs.env }}
+          RESOLVED_BUILD_NUMBER: ${{ steps.resolve.outputs.build_number }}
+          ANDROID_UNITS: ${{ steps.resolve.outputs.android_units }}
+          IOS_UNITS: ${{ steps.resolve.outputs.ios_units }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/mobile/mobile.sh scripts/mobile/android.sh scripts/mobile/ios.sh
+          status=0
+
+          if [[ "$PLATFORMS" != 'ios' && "$ANDROID_UNITS" != '-' ]]; then
+            ./scripts/mobile/mobile.sh android release \
+              --app "$RESOLVED_APP" \
+              --env "$RESOLVED_ENV" \
+              --tag "$TAG" \
+              --build-number "$RESOLVED_BUILD_NUMBER" \
+              --expected-release-units "$ANDROID_UNITS" \
+              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/android/mobile-release-result.json" \
+              || status=1
+          fi
+
+          if [[ "$PLATFORMS" != 'android' && "$IOS_UNITS" != '-' ]]; then
+            ios_env_file="$RUNNER_TEMP/mobile-release-${RESOLVED_APP}-${RESOLVED_ENV}.env"
+            printf '%s\n' "IOS_EXPORT_OPTIONS_PLIST=build/ci/ExportOptions.plist" > "$ios_env_file"
+            mkdir -p "apps/$RESOLVED_APP/build/ci"
+            case "$RESOLVED_ENV" in
+              prod) ios_template="apps/$RESOLVED_APP/ios/ExportOptions-appstore.plist" ;;
+              *) ios_template="apps/$RESOLVED_APP/ios/ExportOptions-${RESOLVED_ENV}.plist" ;;
+            esac
+            [[ -f "$ios_template" ]] || { echo "Missing export options template: $ios_template" >&2; exit 1; }
+            cp "$ios_template" "apps/$RESOLVED_APP/build/ci/ExportOptions.plist"
+
+            ./scripts/mobile/mobile.sh ios release \
+              --app "$RESOLVED_APP" \
+              --env "$RESOLVED_ENV" \
+              --env-file "$ios_env_file" \
+              --tag "$TAG" \
+              --build-number "$RESOLVED_BUILD_NUMBER" \
+              --expected-release-units "$IOS_UNITS" \
+              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/ios/mobile-release-result.json" \
+              || status=1
+          fi
+
+          exit "$status"
+
+      - name: Upload mobile release results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-release-results-${{ inputs.application }}-${{ inputs.profile }}
+          path: |
+            source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}/android/mobile-release-result.json
+            source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}/ios/mobile-release-result.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload mobile artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mobile-artifacts-${{ inputs.application }}-${{ inputs.profile }}
+          path: |
+            source/apps/${{ inputs.application }}/build/release-artifacts/${{ steps.resolve.outputs.env }}/android/**/*.apk
+            source/apps/${{ inputs.application }}/build/release-artifacts/${{ steps.resolve.outputs.env }}/ios/*.ipa
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Record platform results in Draft Release
+        if: always() && steps.resolve.outcome == 'success'
+        shell: bash
+        working-directory: source
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          RESOLVED_APP: ${{ steps.resolve.outputs.app }}
+          RESOLVED_BUILD_NUMBER: ${{ steps.resolve.outputs.build_number }}
+          ANDROID_UNITS: ${{ steps.resolve.outputs.android_units }}
+          IOS_UNITS: ${{ steps.resolve.outputs.ios_units }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/mobile/record-mobile-workflow-results.sh
+
+          android_record="-"
+          ios_record="-"
+          [[ "$PLATFORMS" != 'ios' ]] && android_record="$ANDROID_UNITS"
+          [[ "$PLATFORMS" != 'android' ]] && ios_record="$IOS_UNITS"
+
+          # mobile.sh 把每个平台的结果写在 <app>/build/release-results/<env>/<platform>/
+          # mobile-release-result.json，正好等于 --result-root 需要的目录形状。
+          bash scripts/mobile/record-mobile-workflow-results.sh \
+            --tag "$TAG" \
+            --app "$RESOLVED_APP" \
+            --build-number "$RESOLVED_BUILD_NUMBER" \
+            --android-units "$android_record" \
+            --ios-units "$ios_record" \
+            --result-root "apps/$RESOLVED_APP/build/release-results/${{ steps.resolve.outputs.env }}" \
+            --executed-by "$GITHUB_ACTOR"
+
+      - name: Propagate mobile platform failure
+        if: always() && steps.build.outcome == 'failure'
+        shell: bash
+        run: exit 1
+
+      - name: Remove GitHub token from source checkout
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -d source/.git ]]; then
+            git -C source config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true
+            git -C source submodule foreach --recursive \
+              'git config --local --unset-all http.https://github.com/.extraheader 2>/dev/null || true' \
+              2>/dev/null || true
+          fi
