@@ -150,6 +150,11 @@ jobs:
           node-version: '24'
           architecture: arm64
 
+      # 本仓库没有 package.json，pnpm/action-setup 读不到版本；用 corepack 提供 pnpm shim
+      # （与 release-macos-desktop.yml 一致），实际版本由被检出的 gplus packageManager 决定。
+      - name: Enable Corepack pnpm
+        run: corepack enable
+
       - name: Setup Ruby (fastlane)
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
