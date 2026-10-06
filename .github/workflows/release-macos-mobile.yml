@@ -115,6 +115,7 @@ jobs:
       PROFILE: ${{ inputs.profile }}
       TAG: ${{ inputs.tag }}
       PLATFORMS: ${{ inputs.platforms }}
+      BUILD_NUMBER: ${{ inputs.build_number }}
       FLUTTER_VERSION: '3.44.8'
     steps:
       - name: Checkout runner repository
