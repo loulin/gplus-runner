@@ -119,7 +119,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
-    runs-on: macos-15
+    # 必须用 macos-latest（当前解析为 macos-26-arm64），与 loulin/gplus 的
+    # `runner=github-hosted` lane 一致：macos-15 的 Xcode SDK 会在归档时以
+    # `device_info_plus` 的 `isiOSAppOnVision`（需要较新 SDK）报 ARC Semantic Issue 失败。
+    runs-on: macos-latest
     environment: ${{ inputs.profile }}
     timeout-minutes: 240
     env:
