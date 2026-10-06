@@ -61,8 +61,13 @@ jobs:
     name: Validate mobile release inputs
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Reject unsupported platform/profile combinations
+      # 每个平台跑在独立 job 里：mobile.sh 会改写 pubspec.yaml 的 build code，同一 checkout
+      # 里连续跑两个平台会让第二个平台的工作区门禁（要求干净）失败。
+      - name: Validate inputs and derive platform matrix
+        id: matrix
         shell: bash
         env:
           APPLICATION: ${{ inputs.application }}
@@ -100,11 +105,20 @@ jobs:
           if [[ "$PLATFORMS" != 'android' && "$IOS_UNITS" == '-' ]]; then
             echo "ios_units is required when building iOS" >&2; exit 1
           fi
+          case "$PLATFORMS" in
+            all) platforms='["android","ios"]' ;;
+            android) platforms='["android"]' ;;
+            ios) platforms='["ios"]' ;;
+          esac
+          printf 'matrix={"platform":%s}\n' "$platforms" >> "$GITHUB_OUTPUT"
           echo "mobile release inputs ok: application=$APPLICATION profile=$PROFILE platforms=$PLATFORMS"
 
-  release:
-    name: Build and publish mobile release
+  build:
+    name: Build ${{ matrix.platform }}
     needs: validate
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.validate.outputs.matrix) }}
     runs-on: macos-15
     environment: ${{ inputs.profile }}
     timeout-minutes: 240
@@ -114,8 +128,10 @@ jobs:
       APPLICATION: ${{ inputs.application }}
       PROFILE: ${{ inputs.profile }}
       TAG: ${{ inputs.tag }}
-      PLATFORMS: ${{ inputs.platforms }}
+      PLATFORM: ${{ matrix.platform }}
       BUILD_NUMBER: ${{ inputs.build_number }}
+      ANDROID_UNITS: ${{ inputs.android_units }}
+      IOS_UNITS: ${{ inputs.ios_units }}
       FLUTTER_VERSION: '3.44.8'
     steps:
       - name: Checkout runner repository
@@ -156,6 +172,7 @@ jobs:
         run: corepack enable
 
       - name: Setup Ruby (fastlane)
+        if: matrix.platform == 'ios'
         uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: '4.0'
@@ -163,6 +180,7 @@ jobs:
           bundler-cache: false
 
       - name: Setup Java
+        if: matrix.platform == 'android'
         uses: actions/setup-java@d7793b545071e98d581d3bf084a51c3213318a07 # v4
         with:
           distribution: temurin
@@ -210,6 +228,10 @@ jobs:
             printf 'env=%s\n' "$env_name"
             printf 'source_sha=%s\n' "$source_sha"
           } >> "$GITHUB_OUTPUT"
+          {
+            printf 'RESOLVED_APP=%s\n' "$resolved_app"
+            printf 'RESOLVED_ENV=%s\n' "$env_name"
+          } >> "$GITHUB_ENV"
           echo "resolved: app=$resolved_app env=$env_name sha=$source_sha build=$BUILD_NUMBER"
 
       - name: Install release record dependencies
@@ -227,30 +249,19 @@ jobs:
         env:
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          # 上传成功与否由 mobile.sh 自己判定并写进不可变结果；这里不做二次推断。
-          # build_number / units 由触发者按 Draft 传入，写回时由 loulin/gplus 比对 Draft。
-          RESOLVED_APP: ${{ steps.resolve.outputs.app }}
-          RESOLVED_ENV: ${{ steps.resolve.outputs.env }}
-          RESOLVED_BUILD_NUMBER: ${{ inputs.build_number }}
-          ANDROID_UNITS: ${{ inputs.android_units }}
-          IOS_UNITS: ${{ inputs.ios_units }}
         run: |
           set -euo pipefail
           chmod +x scripts/mobile/mobile.sh scripts/mobile/android.sh scripts/mobile/ios.sh
-          status=0
 
-          if [[ "$PLATFORMS" != 'ios' && "$ANDROID_UNITS" != '-' ]]; then
+          if [[ "$PLATFORM" == 'android' ]]; then
             ./scripts/mobile/mobile.sh android release \
               --app "$RESOLVED_APP" \
               --env "$RESOLVED_ENV" \
               --tag "$TAG" \
-              --build-number "$RESOLVED_BUILD_NUMBER" \
+              --build-number "$BUILD_NUMBER" \
               --expected-release-units "$ANDROID_UNITS" \
-              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/android/mobile-release-result.json" \
-              || status=1
-          fi
-
-          if [[ "$PLATFORMS" != 'android' && "$IOS_UNITS" != '-' ]]; then
+              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/android/mobile-release-result.json"
+          else
             ios_env_file="$RUNNER_TEMP/mobile-release-${RESOLVED_APP}-${RESOLVED_ENV}.env"
             printf '%s\n' "IOS_EXPORT_OPTIONS_PLIST=build/ci/ExportOptions.plist" > "$ios_env_file"
             mkdir -p "apps/$RESOLVED_APP/build/ci"
@@ -266,21 +277,17 @@ jobs:
               --env "$RESOLVED_ENV" \
               --env-file "$ios_env_file" \
               --tag "$TAG" \
-              --build-number "$RESOLVED_BUILD_NUMBER" \
+              --build-number "$BUILD_NUMBER" \
               --expected-release-units "$IOS_UNITS" \
-              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/ios/mobile-release-result.json" \
-              || status=1
+              --result-file "apps/$RESOLVED_APP/build/release-results/$RESOLVED_ENV/ios/mobile-release-result.json"
           fi
-
-          exit "$status"
 
       - name: Upload mobile release results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mobile-release-results-${{ inputs.application }}-${{ inputs.profile }}
-          # 上传整个 <env> 目录（而不是逐个文件），这样只构建单平台时 artifact 里仍然是
-          # 稳定的 <platform>/mobile-release-result.json 结构，写回端可以直接当作 result-root。
+          name: mobile-release-results-${{ inputs.application }}-${{ inputs.profile }}-${{ matrix.platform }}
+          # 上传整个 <env> 目录，artifact 内保持 <platform>/mobile-release-result.json 结构。
           path: source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}
           if-no-files-found: warn
           retention-days: 14
@@ -289,36 +296,33 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: mobile-artifacts-${{ inputs.application }}-${{ inputs.profile }}
-          path: |
-            source/apps/${{ inputs.application }}/build/release-artifacts/${{ steps.resolve.outputs.env }}/android/**/*.apk
-            source/apps/${{ inputs.application }}/build/release-artifacts/${{ steps.resolve.outputs.env }}/ios/*.ipa
+          name: mobile-artifacts-${{ inputs.application }}-${{ inputs.profile }}-${{ matrix.platform }}
+          path: source/apps/${{ inputs.application }}/build/release-artifacts/${{ steps.resolve.outputs.env }}/${{ matrix.platform }}/**
           if-no-files-found: warn
           retention-days: 14
 
       # 本仓库不写 Draft Release（public 仓库不持有私有 monorepo 的写权限）。
-      # 构建成功后由触发者在 loulin/gplus 执行写回，参数就是下面打印的内容。
+      # 构建成功后由触发者在 loulin/gplus 执行写回，命令见本步骤摘要。
       - name: Publish handoff summary
         if: always()
         shell: bash
         run: |
           set -uo pipefail
           {
-            echo "### macOS mobile build (no Release record written)"
+            echo "### macOS mobile build - $PLATFORM (no Release record written)"
             echo
             echo "- Application / profile: \`$APPLICATION\` / \`$PROFILE\`"
             echo "- Tag: \`$TAG\`"
-            echo "- Platforms: \`$PLATFORMS\`"
-            echo "- Build number: \`${{ inputs.build_number }}\`"
-            echo "- Android units: \`${{ inputs.android_units }}\`"
-            echo "- iOS units: \`${{ inputs.ios_units }}\`"
+            echo "- Build number: \`$BUILD_NUMBER\`"
+            echo "- Android units: \`$ANDROID_UNITS\`"
+            echo "- iOS units: \`$IOS_UNITS\`"
             echo "- Build outcome: \`${{ steps.build.outcome }}\`"
             echo
-            echo "构建成功后，在 loulin/gplus 执行写回（触发者本人，使用私有仓的 GITHUB_TOKEN）："
+            echo "全部平台构建成功后，在 loulin/gplus 执行写回（触发者本人，用私有仓的 GITHUB_TOKEN）："
             echo
             echo '```'
-            echo "gh workflow run record-mobile-runner-release.yml --repo loulin/gplus --ref <default-branch> \\"
-            echo "  -f tag=$TAG -f runner_run_id=${{ github.run_id }}"
+            echo "gh workflow run record-mobile-runner-release.yml --repo loulin/gplus --ref master \\"
+            echo "  -f tag=$TAG -f runner_run_id=${{ github.run_id }} -f profile=$PROFILE"
             echo '```'
             echo
             echo "本仓库不会写入 loulin/gplus 的发布记录；未执行写回时 Draft 里的单元保持未完成。"
