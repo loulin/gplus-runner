@@ -1,13 +1,13 @@
-name: macOS Mobile Release
+name: macOS Mobile Build
 
-# 移动端（Android + iOS）在 hosted macOS 上的发布入口，与 release-macos-desktop.yml 同构：
-# 本仓库只做编排，检出 loulin/gplus 的发布 Tag 后调用同一套 scripts/mobile，不复制构建实现。
+# 移动端（Android + iOS）在 hosted macOS 上的**构建**入口。本仓库是 public，因此这里只构建、
+# 不写入 loulin/gplus 的 Draft Release：本仓库持有的唯一仓库外凭据是只读的 Infisical 机器身份
+# （构建签名与上传所需），没有任何对私有 monorepo 的写权限。
 #
-# 与桌面端的唯一区别：移动端发布记录写在 loulin/gplus 的 Draft Release 上，因此需要一份对
-# 该仓库有 contents: write 的身份（见 docs/development/mobile/release-automation.md）。
+# 发布记录由 loulin/gplus 的 `record-mobile-runner-release.yml` 在本仓库构建成功后写回
+# （触发者执行，见 docs/development/mobile/release-automation.md）。
 #
-# 运行面真源见 loulin/gplus 的 docs/development/mobile/release-automation.md；分工见
-# docs/development/desktop-release-matrix.md 的命名约定（release-<os>-<用途>.yml）。
+# 编排与脚本仍只有一份：这里检出 loulin/gplus 的发布 Tag 后调用同一套 scripts/mobile。
 
 on:
   workflow_dispatch:
@@ -27,6 +27,20 @@ on:
       tag:
         description: Canonical annotated mobile release tag in loulin/gplus (mobile/<app>/vX.Y.Z)
         required: true
+        type: string
+      build_number:
+        description: Build number from the Draft Release manifest (must match it)
+        required: true
+        type: string
+      android_units:
+        description: Android planned units from the Draft manifest, or "-" (e.g. direct|universal|arm64-v8a)
+        required: true
+        default: "-"
+        type: string
+      ios_units:
+        description: iOS planned units from the Draft manifest, or "-" (e.g. store|app_store|arm64)
+        required: true
+        default: "-"
         type: string
       platforms:
         description: Which platforms to build and publish
@@ -54,6 +68,9 @@ jobs:
           APPLICATION: ${{ inputs.application }}
           PROFILE: ${{ inputs.profile }}
           PLATFORMS: ${{ inputs.platforms }}
+          BUILD_NUMBER: ${{ inputs.build_number }}
+          ANDROID_UNITS: ${{ inputs.android_units }}
+          IOS_UNITS: ${{ inputs.ios_units }}
         run: |
           set -euo pipefail
           case "$APPLICATION" in
@@ -70,6 +87,18 @@ jobs:
           if [[ "$PROFILE" == 'production' && "$PLATFORMS" != 'ios' ]]; then
             echo "production Android signing is not available on this runner; use the loulin/gplus self-hosted runner" >&2
             exit 1
+          fi
+          [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "build_number must be a positive integer" >&2; exit 1; }
+          unit_pattern='^(direct|store)\|[A-Za-z0-9][A-Za-z0-9_.-]*\|[A-Za-z0-9][A-Za-z0-9_.-]*$'
+          for descriptor in ${ANDROID_UNITS//,/ } ${IOS_UNITS//,/ }; do
+            [[ "$descriptor" == '-' ]] && continue
+            [[ "$descriptor" =~ $unit_pattern ]] || { echo "invalid unit descriptor: $descriptor" >&2; exit 1; }
+          done
+          if [[ "$PLATFORMS" != 'ios' && "$ANDROID_UNITS" == '-' ]]; then
+            echo "android_units is required when building Android" >&2; exit 1
+          fi
+          if [[ "$PLATFORMS" != 'android' && "$IOS_UNITS" == '-' ]]; then
+            echo "ios_units is required when building iOS" >&2; exit 1
           fi
           echo "mobile release inputs ok: application=$APPLICATION profile=$PROFILE platforms=$PLATFORMS"
 
@@ -93,7 +122,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # checkout 源码只需要 contents: read。
+      # 源码 checkout 只需要 contents: read。本仓库不持有任何对 loulin/gplus 的写权限。
       - name: Create read-only source token
         id: source-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
@@ -103,44 +132,6 @@ jobs:
           owner: loulin
           repositories: gplus
           permission-contents: read
-
-      # 写回 Draft 需要 contents: write。实跑确认该 App 只有 contents: read，因此优先用
-      # 专用 token；没有时再尝试给同一个 App 申请写权限（需要该 App 在本仓被授权过
-      # contents: write，否则这一步失败——下面的 "Resolve release writer token" 会
-      # 给出可操作的错误信息，而不是让发布记录静默缺失）。
-      - name: Create release writer token from app
-        id: writer-token
-        continue-on-error: true
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
-          private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
-          owner: loulin
-          repositories: gplus
-          permission-contents: write
-
-      - name: Resolve release writer token
-        id: writer
-        shell: bash
-        env:
-          DEDICATED_TOKEN: ${{ secrets.GPLUS_RELEASE_WRITER_TOKEN }}
-          APP_TOKEN: ${{ steps.writer-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          token="${DEDICATED_TOKEN:-${APP_TOKEN:-}}"
-          if [[ -z "$token" ]]; then
-            cat >&2 <<'MESSAGE'
-          无法取得写回 loulin/gplus Draft Release 的凭据。二选一：
-            1) 给 GPLUS_SOURCE_READER_APP_ID 对应的 GitHub App 授权 loulin/gplus 的
-               Contents: Read and write；或
-            2) 在本仓库 Environment 里配置 secret GPLUS_RELEASE_WRITER_TOKEN
-               （fine-grained PAT，仅 loulin/gplus，Contents: Read and write）。
-          MESSAGE
-            exit 1
-          fi
-          # 值只经过 GITHUB_OUTPUT，不进 argv 或日志；GitHub 会自动 mask secret。
-          printf 'token=%s\n' "$token" >> "$GITHUB_OUTPUT"
-          echo "release writer token resolved"
 
       - name: Checkout private source at release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -180,12 +171,11 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
 
-      - name: Resolve release identity and draft plan
+      # 只依据 Tag 自身与调用方传入的计划校验身份，不读 Draft Release（本仓库没有该权限，
+      # 也不需要）。真正的 plan 一致性由 loulin/gplus 写回发布记录时对 Draft 校验。
+      - name: Resolve release identity from the Tag
         id: resolve
         shell: bash
-        env:
-          # Draft Release 只对 push 权限的身份可见，read-only token 读不到 manifest。
-          GH_TOKEN: ${{ steps.writer.outputs.token }}
         working-directory: source
         run: |
           set -euo pipefail
@@ -209,22 +199,15 @@ jobs:
           fi
 
           source_sha="$(git rev-parse --verify HEAD^{commit})"
-          readiness="$(bash scripts/mobile/wait-for-mobile-release-ready.sh \
-            "$TAG" "$source_sha" "$resolved_app")"
-          IFS=$'\t' read -r \
-            build_number android_planned ios_planned android_units ios_units \
-            <<< "$readiness"
+          [[ "$BUILD_NUMBER" == "$(sed -n 's/^version: [0-9.]*+\([0-9]*\)$/\1/p' "apps/$resolved_app/pubspec.yaml")" ]] \
+            || echo "note: build_number input differs from the tagged pubspec; mobile.sh will assert it"
 
           {
             printf 'app=%s\n' "$resolved_app"
             printf 'env=%s\n' "$env_name"
-            printf 'build_number=%s\n' "$build_number"
-            printf 'android_planned=%s\n' "$android_planned"
-            printf 'ios_planned=%s\n' "$ios_planned"
-            printf 'android_units=%s\n' "$android_units"
-            printf 'ios_units=%s\n' "$ios_units"
+            printf 'source_sha=%s\n' "$source_sha"
           } >> "$GITHUB_OUTPUT"
-          echo "resolved: app=$resolved_app env=$env_name build=$build_number android=$android_planned ios=$ios_planned"
+          echo "resolved: app=$resolved_app env=$env_name sha=$source_sha build=$BUILD_NUMBER"
 
       - name: Install release record dependencies
         working-directory: source
@@ -242,11 +225,12 @@ jobs:
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           # 上传成功与否由 mobile.sh 自己判定并写进不可变结果；这里不做二次推断。
+          # build_number / units 由触发者按 Draft 传入，写回时由 loulin/gplus 比对 Draft。
           RESOLVED_APP: ${{ steps.resolve.outputs.app }}
           RESOLVED_ENV: ${{ steps.resolve.outputs.env }}
-          RESOLVED_BUILD_NUMBER: ${{ steps.resolve.outputs.build_number }}
-          ANDROID_UNITS: ${{ steps.resolve.outputs.android_units }}
-          IOS_UNITS: ${{ steps.resolve.outputs.ios_units }}
+          RESOLVED_BUILD_NUMBER: ${{ inputs.build_number }}
+          ANDROID_UNITS: ${{ inputs.android_units }}
+          IOS_UNITS: ${{ inputs.ios_units }}
         run: |
           set -euo pipefail
           chmod +x scripts/mobile/mobile.sh scripts/mobile/android.sh scripts/mobile/ios.sh
@@ -292,9 +276,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: mobile-release-results-${{ inputs.application }}-${{ inputs.profile }}
-          path: |
-            source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}/android/mobile-release-result.json
-            source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}/ios/mobile-release-result.json
+          # 上传整个 <env> 目录（而不是逐个文件），这样只构建单平台时 artifact 里仍然是
+          # 稳定的 <platform>/mobile-release-result.json 结构，写回端可以直接当作 result-root。
+          path: source/apps/${{ inputs.application }}/build/release-results/${{ steps.resolve.outputs.env }}
           if-no-files-found: warn
           retention-days: 14
 
@@ -309,35 +293,33 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      - name: Record platform results in Draft Release
-        if: always() && steps.resolve.outcome == 'success'
+      # 本仓库不写 Draft Release（public 仓库不持有私有 monorepo 的写权限）。
+      # 构建成功后由触发者在 loulin/gplus 执行写回，参数就是下面打印的内容。
+      - name: Publish handoff summary
+        if: always()
         shell: bash
-        working-directory: source
-        env:
-          GH_TOKEN: ${{ steps.writer.outputs.token }}
-          RESOLVED_APP: ${{ steps.resolve.outputs.app }}
-          RESOLVED_BUILD_NUMBER: ${{ steps.resolve.outputs.build_number }}
-          ANDROID_UNITS: ${{ steps.resolve.outputs.android_units }}
-          IOS_UNITS: ${{ steps.resolve.outputs.ios_units }}
         run: |
-          set -euo pipefail
-          chmod +x scripts/mobile/record-mobile-workflow-results.sh
-
-          android_record="-"
-          ios_record="-"
-          [[ "$PLATFORMS" != 'ios' ]] && android_record="$ANDROID_UNITS"
-          [[ "$PLATFORMS" != 'android' ]] && ios_record="$IOS_UNITS"
-
-          # mobile.sh 把每个平台的结果写在 <app>/build/release-results/<env>/<platform>/
-          # mobile-release-result.json，正好等于 --result-root 需要的目录形状。
-          bash scripts/mobile/record-mobile-workflow-results.sh \
-            --tag "$TAG" \
-            --app "$RESOLVED_APP" \
-            --build-number "$RESOLVED_BUILD_NUMBER" \
-            --android-units "$android_record" \
-            --ios-units "$ios_record" \
-            --result-root "apps/$RESOLVED_APP/build/release-results/${{ steps.resolve.outputs.env }}" \
-            --executed-by "$GITHUB_ACTOR"
+          set -uo pipefail
+          {
+            echo "### macOS mobile build (no Release record written)"
+            echo
+            echo "- Application / profile: \`$APPLICATION\` / \`$PROFILE\`"
+            echo "- Tag: \`$TAG\`"
+            echo "- Platforms: \`$PLATFORMS\`"
+            echo "- Build number: \`${{ inputs.build_number }}\`"
+            echo "- Android units: \`${{ inputs.android_units }}\`"
+            echo "- iOS units: \`${{ inputs.ios_units }}\`"
+            echo "- Build outcome: \`${{ steps.build.outcome }}\`"
+            echo
+            echo "构建成功后，在 loulin/gplus 执行写回（触发者本人，使用私有仓的 GITHUB_TOKEN）："
+            echo
+            echo '```'
+            echo "gh workflow run record-mobile-runner-release.yml --repo loulin/gplus --ref <default-branch> \\"
+            echo "  -f tag=$TAG -f runner_run_id=${{ github.run_id }}"
+            echo '```'
+            echo
+            echo "本仓库不会写入 loulin/gplus 的发布记录；未执行写回时 Draft 里的单元保持未完成。"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Propagate mobile platform failure
         if: always() && steps.build.outcome == 'failure'
