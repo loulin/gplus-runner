@@ -93,9 +93,8 @@ jobs:
         with:
           persist-credentials: false
 
-      # 一次取 token：checkout 源码需要 contents: read，写回 Draft 需要 contents: write。
-      # 若该 GitHub App 没有 contents: write，这一步会直接失败，而不是悄悄跳过发布记录。
-      - name: Create source token
+      # checkout 源码只需要 contents: read。
+      - name: Create read-only source token
         id: source-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
@@ -103,7 +102,45 @@ jobs:
           private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
           owner: loulin
           repositories: gplus
+          permission-contents: read
+
+      # 写回 Draft 需要 contents: write。实跑确认该 App 只有 contents: read，因此优先用
+      # 专用 token；没有时再尝试给同一个 App 申请写权限（需要该 App 在本仓被授权过
+      # contents: write，否则这一步失败——下面的 "Resolve release writer token" 会
+      # 给出可操作的错误信息，而不是让发布记录静默缺失）。
+      - name: Create release writer token from app
+        id: writer-token
+        continue-on-error: true
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.GPLUS_SOURCE_READER_APP_ID }}
+          private-key: ${{ secrets.GPLUS_SOURCE_READER_PRIVATE_KEY }}
+          owner: loulin
+          repositories: gplus
           permission-contents: write
+
+      - name: Resolve release writer token
+        id: writer
+        shell: bash
+        env:
+          DEDICATED_TOKEN: ${{ secrets.GPLUS_RELEASE_WRITER_TOKEN }}
+          APP_TOKEN: ${{ steps.writer-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          token="${DEDICATED_TOKEN:-${APP_TOKEN:-}}"
+          if [[ -z "$token" ]]; then
+            cat >&2 <<'MESSAGE'
+          无法取得写回 loulin/gplus Draft Release 的凭据。二选一：
+            1) 给 GPLUS_SOURCE_READER_APP_ID 对应的 GitHub App 授权 loulin/gplus 的
+               Contents: Read and write；或
+            2) 在本仓库 Environment 里配置 secret GPLUS_RELEASE_WRITER_TOKEN
+               （fine-grained PAT，仅 loulin/gplus，Contents: Read and write）。
+          MESSAGE
+            exit 1
+          fi
+          # 值只经过 GITHUB_OUTPUT，不进 argv 或日志；GitHub 会自动 mask secret。
+          printf 'token=%s\n' "$token" >> "$GITHUB_OUTPUT"
+          echo "release writer token resolved"
 
       - name: Checkout private source at release tag
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -147,7 +184,8 @@ jobs:
         id: resolve
         shell: bash
         env:
-          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          # Draft Release 只对 push 权限的身份可见，read-only token 读不到 manifest。
+          GH_TOKEN: ${{ steps.writer.outputs.token }}
         working-directory: source
         run: |
           set -euo pipefail
@@ -276,7 +314,7 @@ jobs:
         shell: bash
         working-directory: source
         env:
-          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          GH_TOKEN: ${{ steps.writer.outputs.token }}
           RESOLVED_APP: ${{ steps.resolve.outputs.app }}
           RESOLVED_BUILD_NUMBER: ${{ steps.resolve.outputs.build_number }}
           ANDROID_UNITS: ${{ steps.resolve.outputs.android_units }}
