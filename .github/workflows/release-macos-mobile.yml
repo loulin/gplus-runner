@@ -245,6 +245,10 @@ jobs:
         env:
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+          # 只读源码 token 同时供 `gh` 使用：gplus-clinician-app 在 mobile.sh 内会回读
+          # Draft 计划做一次一致性校验（其他 App 不做），没有 GH_TOKEN 时 `gh` 直接以
+          # exit 4 失败。该 token 仍是 contents: read，不引入任何写权限。
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
           chmod +x scripts/mobile/mobile.sh scripts/mobile/android.sh scripts/mobile/ios.sh
