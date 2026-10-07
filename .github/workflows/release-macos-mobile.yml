@@ -245,9 +245,11 @@ jobs:
         env:
           INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
           INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          # 只读源码 token 同时供 `gh` 使用：gplus-clinician-app 在 mobile.sh 内会回读
-          # Draft 计划做一次一致性校验（其他 App 不做），没有 GH_TOKEN 时 `gh` 直接以
-          # exit 4 失败。该 token 仍是 contents: read，不引入任何写权限。
+          # 本仓库只有私有仓的只读 token，读不到 Draft Release（Draft 只对有 push 权限的
+          # 身份可见）。因此这里声明计划已预校验：计划由触发者按 Draft 作为输入传入，
+          # 写回时 `record-mobile-runner-release.yml` 会用有权限的身份校验产物与 Draft 一致。
+          # GH_TOKEN 仍然注入，供其它 `gh` 只读调用使用。
+          MOBILE_RELEASE_PLAN_PREVALIDATED: '1'
           GH_TOKEN: ${{ steps.source-token.outputs.token }}
         run: |
           set -euo pipefail
