@@ -609,7 +609,7 @@ feed、Release API、receipt 和本地最终文件的 version/hash/size 一致�
 ### P4：启用统一 workflow 的 Production handoff
 
 - [x] 统一 workflow 接受 `profile=production`，channel 固定 `prod`，默认源分支 `master`。
-- [ ] 要求稳定版本、完整 SHA/不可移动 annotated tag 和 Production Environment approval。
+- [ ] 要求稳定版本、完整 SHA/不可移动 annotated tag，并只允许从 `main` 使用 Production Environment（deployment branch policy）。
 - [x] 绑定独立的 production age recipient，禁止 staging recipient 和 staging URL 混用。
 - [ ] 保持 hosted runner 不接触 Qiniu、Release API token 和 SimplySign private material。
 

@@ -77,10 +77,12 @@ RELEASE_TOKEN
 HERMES_SOURCE_SSH_KEY
 ```
 
-`production` remains protected by its required reviewer rule. The workflow
-decodes the P8, P12, and Hermes SSH key material only into the ephemeral
-runner, signs and notarizes the package, publishes through the source release
-adapter, and removes the files in an `always()` cleanup step. Store
+`production` is protected by an Environment deployment branch policy that only
+allows `main`, so the workflow revision must already be merged to `main` before
+production secrets are exposed to a run. The workflow decodes the P8, P12, and
+Hermes SSH key material only into the ephemeral runner, signs and notarizes the
+package, publishes through the source release adapter, and removes the files in
+an `always()` cleanup step. Store
 `HERMES_SOURCE_SSH_KEY` as base64-encoded private-key bytes so the multiline key
 survives GitHub Actions environment transport. Gplus Bot Desktop's public
 Hermes source is fetched over `ssh.github.com:443` with the environment-scoped
@@ -157,8 +159,9 @@ gh workflow run release-macos-desktop.yml \
 ```
 
 For Libre Reader use `libre-reader-vX.Y.Z-staging` with `profile=staging`, or
-the stable `libre-reader-vX.Y.Z` tag with `profile=production`. Production
-waits for Environment approval before its secrets are exposed to the job.
+the stable `libre-reader-vX.Y.Z` tag with `profile=production`. The production
+Environment only accepts runs dispatched from `main`, and its secrets are
+injected into the job only then.
 
 Inspect the result:
 
