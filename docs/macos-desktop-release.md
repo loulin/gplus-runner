@@ -46,9 +46,9 @@ GPLUS_SOURCE_READER_PRIVATE_KEY
 ```
 
 The `staging` and `production` Environments must each contain these ten
-secrets. They are environment-scoped so Production remains behind its existing
-required reviewer rule. `HERMES_SOURCE_SSH_KEY` is consumed only by Gplus Bot
-Desktop jobs; Libre Reader jobs do not use it.
+secrets. They are environment-scoped so Production stays behind its
+`main`-only deployment branch policy. `HERMES_SOURCE_SSH_KEY` is consumed only
+by Gplus Bot Desktop jobs; Libre Reader jobs do not use it.
 
 ```text
 ASC_ISSUER_ID
@@ -162,9 +162,8 @@ gh workflow run release-macos-desktop.yml \
 ```
 
 Use the corresponding stable tag and `profile=production` for Production. The
-Production job pauses at the protected `production` Environment until its
-reviewer approves the run. Approval is required before signing credentials are
-made available to the job.
+`production` Environment only accepts runs dispatched from `main`, and its
+signing credentials are injected into the job only then.
 
 Inspect the run:
 
