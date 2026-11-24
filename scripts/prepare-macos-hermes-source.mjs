@@ -11,7 +11,11 @@ const HERMES_PATH = 'apps/gplus-bot-desktop/vendor/hermes-agent';
 const HERMES_URL = 'https://github.com/NousResearch/hermes-agent.git';
 const HERMES_SSH_URL = 'git@github.com:NousResearch/hermes-agent.git';
 const HERMES_REPOSITORY = 'NousResearch/hermes-agent';
-const HERMES_TAG_PATTERN = /^v\d{4}\.\d+\.\d+(?:\.\d+)?$/u;
+// 稳定 release tag 同时覆盖两种历史形态：日历版本（v2026.9.11）与
+// v0.22.5 起的 SemVer（v0.22.5）。规则与私有源
+// `apps/gplus-bot-desktop/src/upstream/hermes-source-lock.mjs` 的
+// HERMES_RELEASE_TAG_PATTERN 保持一致；这里独立实现，只镜像判定语义。
+const HERMES_TAG_PATTERN = /^v(?:0|[1-9]\d*)\.\d+\.\d+(?:\.\d+)?$/u;
 const GIT_OID_PATTERN = /^[0-9a-f]{40}$/u;
 const GITHUB_SSH_HOST_FINGERPRINT = 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU';
 const FETCH_ATTEMPTS = 5;
