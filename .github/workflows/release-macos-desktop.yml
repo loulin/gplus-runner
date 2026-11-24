@@ -174,7 +174,13 @@ jobs:
             echo "Target $TARGET requires packaging Python machine $expected_machine, got $actual_machine" >&2
             exit 1
           fi
+          # Hermes 的桌面打包脚本（prepare-packaging-tools -> prepare-dmgbuild）要求
+          # HERMES_PYTHON 指向已准备的解释器，缺失即报
+          # "Set HERMES_PYTHON to the prepared build interpreter"。这里与私有源一致地把
+          # 同一个 uv-managed CPython 同时导出为 GPLUS_BUILD_PYTHON 与 HERMES_PYTHON。
           printf 'GPLUS_OFFLINE_PYTHON=%s\n' "$packaging_python" >> "$GITHUB_ENV"
+          printf 'GPLUS_BUILD_PYTHON=%s\n' "$packaging_python" >> "$GITHUB_ENV"
+          printf 'HERMES_PYTHON=%s\n' "$packaging_python" >> "$GITHUB_ENV"
           echo "Pinned uv-managed packaging Python $packaging_version ($actual_machine): $packaging_python"
 
       - name: Setup Fastlane Ruby
