@@ -153,14 +153,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          uv python install 3.13
-          packaging_python="$(uv python find 3.13 --no-project --managed-python --no-python-downloads)"
+          # 打包阶段需要一个可重定位的 CPython 3.14（sys.base_prefix 布局）：非托管解释器或
+          # venv 会被 payload provenance 校验拒绝。版本与私有源
+          # `.github/workflows/desktop-release-macos.yml` 的 "Prepare packaging Python and uv"
+          # 保持一致；Hermes 自 0.22.5 起的 uv.lock 只支持 python_full_version >= 3.14。
+          uv python install 3.14
+          packaging_python="$(uv python find 3.14 --no-project --managed-python --no-python-downloads)"
           packaging_version="$("$packaging_python" -c 'import sys; print(".".join(map(str, sys.version_info[:3])))')"
           case "$packaging_version" in
-            3.11.*|3.12.*|3.13.*)
+            3.14.*)
               ;;
             *)
-              echo "Unsupported packaging Python version: $packaging_version" >&2
+              echo "Unsupported packaging Python version: $packaging_version (requires 3.14)" >&2
               exit 1
               ;;
           esac
