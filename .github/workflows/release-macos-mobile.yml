@@ -17,7 +17,7 @@ on:
         required: true
         default: gplus-customer-app
         type: choice
-        options: [gplus-customer-app, gplus-customer-pro-app, gplus-clinician-app]
+        options: [gplus-customer-app, gplus-customer-pro-app, gplus-clinician-app, gplus-webot]
       profile:
         description: Release profile
         required: true
@@ -79,13 +79,22 @@ jobs:
         run: |
           set -euo pipefail
           case "$APPLICATION" in
-            gplus-customer-app|gplus-customer-pro-app|gplus-clinician-app) ;;
+            gplus-customer-app|gplus-customer-pro-app|gplus-clinician-app|gplus-webot) ;;
             *) echo "unsupported application: $APPLICATION" >&2; exit 1 ;;
           esac
           case "$PLATFORMS" in
             all|android|ios) ;;
             *) echo "unsupported platforms: $PLATFORMS" >&2; exit 1 ;;
           esac
+          if [[ "$APPLICATION" == 'gplus-webot' ]]; then
+            if [[ "$PLATFORMS" == 'ios' ]]; then
+              echo "gplus-webot only supports android" >&2; exit 1
+            fi
+            if [[ "$IOS_UNITS" != '-' ]]; then
+              echo "gplus-webot does not support ios_units" >&2; exit 1
+            fi
+            PLATFORMS='android'
+          fi
           [[ "$BUILD_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo "build_number must be a positive integer" >&2; exit 1; }
           unit_pattern='^(direct|store)\|[A-Za-z0-9][A-Za-z0-9_.-]*\|[A-Za-z0-9][A-Za-z0-9_.-]*$'
           for descriptor in ${ANDROID_UNITS//,/ } ${IOS_UNITS//,/ }; do
@@ -182,12 +191,6 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          cache: true
-
       # 只依据 Tag 自身与调用方传入的计划校验身份，不读 Draft Release（本仓库没有该权限，
       # 也不需要）。真正的 plan 一致性由 loulin/gplus 写回发布记录时对 Draft 校验。
       - name: Resolve release identity from the Tag
@@ -215,12 +218,28 @@ jobs:
             exit 1
           fi
 
+          MOBILE_BUILD_SYSTEM="flutter"
+          MOBILE_GRADLE_DIR="android"
+          if [[ -f "scripts/mobile/apps/$resolved_app.sh" ]]; then
+            # shellcheck source=/dev/null
+            source "scripts/mobile/apps/$resolved_app.sh"
+          fi
+          build_system="${MOBILE_BUILD_SYSTEM:-flutter}"
+
           source_sha="$(git rev-parse --verify HEAD^{commit})"
-          [[ "$BUILD_NUMBER" == "$(sed -n 's/^version: [0-9.]*+\([0-9]*\)$/\1/p' "apps/$resolved_app/pubspec.yaml")" ]] \
-            || echo "note: build_number input differs from the tagged pubspec; mobile.sh will assert it"
+          if [[ "$build_system" == 'gradle' ]]; then
+            version_file="apps/$resolved_app/${MOBILE_GRADLE_DIR:-android}/version.properties"
+            tagged_code="$(sed -n 's/^version=[0-9A-Za-z.-]*+\([0-9]*\)$/\1/p' "$version_file")"
+            [[ "$BUILD_NUMBER" == "$tagged_code" ]] \
+              || echo "note: build_number input differs from the tagged version.properties; mobile.sh will assert it"
+          else
+            [[ "$BUILD_NUMBER" == "$(sed -n 's/^version: [0-9.]*+\([0-9]*\)$/\1/p' "apps/$resolved_app/pubspec.yaml")" ]] \
+              || echo "note: build_number input differs from the tagged pubspec; mobile.sh will assert it"
+          fi
 
           {
             printf 'app=%s\n' "$resolved_app"
+            printf 'build_system=%s\n' "$build_system"
             printf 'env=%s\n' "$env_name"
             printf 'source_sha=%s\n' "$source_sha"
           } >> "$GITHUB_OUTPUT"
@@ -228,7 +247,36 @@ jobs:
             printf 'RESOLVED_APP=%s\n' "$resolved_app"
             printf 'RESOLVED_ENV=%s\n' "$env_name"
           } >> "$GITHUB_ENV"
-          echo "resolved: app=$resolved_app env=$env_name sha=$source_sha build=$BUILD_NUMBER"
+          echo "resolved: app=$resolved_app build_system=$build_system env=$env_name sha=$source_sha build=$BUILD_NUMBER"
+
+      - name: Setup Flutter
+        if: steps.resolve.outputs.build_system != 'gradle'
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Resolve Android SDK root
+        if: matrix.platform == 'android'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdk_root="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk_root" && -d "$HOME/Library/Android/sdk" ]]; then
+            sdk_root="$HOME/Library/Android/sdk"
+          fi
+          if [[ ( -z "$sdk_root" || ! -d "$sdk_root" ) ]] && command -v flutter >/dev/null 2>&1; then
+            sdk_root="$(flutter doctor -v 2>/dev/null | sed -n 's/^.*Android SDK at //p' | head -n1)"
+          fi
+          if [[ -z "$sdk_root" || ! -d "$sdk_root" ]]; then
+            echo "::error::无法解析 Android SDK 根目录：请导出 ANDROID_HOME/ANDROID_SDK_ROOT，或为 flutter 配置 android-sdk"
+            exit 1
+          fi
+
+          echo "Android SDK root: $sdk_root"
+          echo "build-tools: $(ls -1 "$sdk_root/build-tools" 2>/dev/null | tr '\n' ' ')"
+          echo "ANDROID_HOME=$sdk_root" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$sdk_root" >> "$GITHUB_ENV"
 
       - name: Install release record dependencies
         working-directory: source
