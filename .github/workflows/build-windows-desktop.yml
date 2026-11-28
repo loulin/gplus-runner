@@ -309,6 +309,7 @@ jobs:
           }
           "GPLUS_OFFLINE_PYTHON=$pythonPath" >> $env:GITHUB_ENV
           "GPLUS_BUILD_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+          "HERMES_PYTHON=$pythonPath" >> $env:GITHUB_ENV
           & $pythonPath --version
 
       - name: Setup uv
