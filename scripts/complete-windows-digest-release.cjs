@@ -164,8 +164,7 @@ async function signRound(files, label) {
   console.log(`Round ${round} verified: ${verified.length}/${files.length}`);
 }
 async function builder(state, format) {
-  const requireDesktop = createRequire(path.join(state.desktop, 'package.json'));
-  const builderEntry = requireDesktop.resolve('electron-builder');
+  const builderEntry = toolRequire.resolve('electron-builder');
   const cli = path.join(path.dirname(builderEntry), '..', 'cli.js');
   ensure(fs.existsSync(cli), 'electron-builder CLI is missing');
   await new Promise((resolve, reject) => {

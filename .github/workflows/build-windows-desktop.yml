@@ -461,7 +461,7 @@ jobs:
         if: inputs.delivery_mode == 'digest'
         shell: pwsh
         run: |
-          npm install --prefix "$env:RUNNER_TEMP/digest-poc-tools" --no-save --ignore-scripts @actions/artifact@2.3.2 js-yaml@4.1.0
+          npm install --prefix "$env:RUNNER_TEMP/digest-poc-tools" --no-save --ignore-scripts @actions/artifact@2.3.2 js-yaml@4.1.0 electron-builder@26.15.6
           if ($LASTEXITCODE -ne 0) { throw 'Digest signing tool installation failed' }
 
       - name: Install SimplySign and connect on the hosted runner
