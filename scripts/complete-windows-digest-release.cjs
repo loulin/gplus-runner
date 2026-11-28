@@ -165,7 +165,9 @@ async function signRound(files, label) {
 }
 async function builder(state, format) {
   const requireDesktop = createRequire(path.join(state.desktop, 'package.json'));
-  const cli = requireDesktop.resolve('electron-builder/cli.js');
+  const builderEntry = requireDesktop.resolve('electron-builder');
+  const cli = path.join(path.dirname(builderEntry), '..', 'cli.js');
+  ensure(fs.existsSync(cli), 'electron-builder CLI is missing');
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cli, '--win', format, '--x64', '--prepackaged', state.unpacked, '--publish', 'never'], { cwd: state.desktop, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false', GPLUS_DIGEST_MODULE: __filename }, stdio: 'inherit' });
     child.on('error', reject);
