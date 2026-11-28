@@ -315,6 +315,7 @@ jobs:
             throw "Packaging Python python3.exe could not be removed from the temporary runner: $python3Path"
           }
           "GPLUS_OFFLINE_PYTHON=$pythonPath" >> $env:GITHUB_ENV
+          "GPLUS_BUILD_PYTHON=$pythonPath" >> $env:GITHUB_ENV
           & $pythonPath --version
 
       - name: Setup uv
