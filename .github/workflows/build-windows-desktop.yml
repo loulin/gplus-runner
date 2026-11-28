@@ -38,6 +38,11 @@ on:
         default: digest
         type: choice
         options: [handoff, digest]
+      hosted_signing:
+        description: Sign digests on this hosted runner with SimplySign instead of a separate signing host
+        required: true
+        default: false
+        type: boolean
       publish:
         description: Publish verified signed artifacts to the selected environment
         required: true
@@ -71,6 +76,7 @@ jobs:
       SOURCE_REF: ${{ inputs.source_ref }}
       HANDOFF_ENCRYPTION: ${{ inputs.handoff_encryption }}
       DELIVERY_MODE: ${{ inputs.delivery_mode }}
+      HOSTED_SIGNING: ${{ inputs.hosted_signing }}
       PUBLISH_RELEASE: ${{ inputs.publish }}
       PROMOTE_RELEASE: ${{ inputs.promote }}
     steps:
@@ -85,6 +91,7 @@ jobs:
           if ($env:PUBLISH_RELEASE -eq 'true' -and $env:DELIVERY_MODE -ne 'digest') { throw 'publish requires digest delivery mode' }
           if ($env:PROMOTE_RELEASE -eq 'true' -and $env:PUBLISH_RELEASE -ne 'true') { throw 'promote requires publish' }
           if ($env:DELIVERY_MODE -eq 'digest' -and ($env:APPLICATION -ne 'gplus-bot-desktop' -or $env:TARGET -ne 'win-x64')) { throw 'Digest signing supports Gplus Bot Desktop win-x64' }
+          if ($env:HOSTED_SIGNING -eq 'true' -and $env:DELIVERY_MODE -ne 'digest') { throw 'hosted signing requires digest delivery mode' }
 
       - name: Create read-only source token
         id: source-token
@@ -455,10 +462,56 @@ jobs:
           npm install --prefix "$env:RUNNER_TEMP/digest-poc-tools" --no-save --ignore-scripts @actions/artifact@2.3.2 js-yaml@4.1.0
           if ($LASTEXITCODE -ne 0) { throw 'Digest signing tool installation failed' }
 
+      - name: Install SimplySign and connect on the hosted runner
+        if: inputs.delivery_mode == 'digest' && inputs.hosted_signing
+        shell: pwsh
+        env:
+          SIMPLYSIGN_ACCOUNT: ${{ secrets.SIMPLYSIGN_ACCOUNT }}
+          SIMPLYSIGN_TOTP_URI: ${{ secrets.SIMPLYSIGN_TOTP_URI }}
+          SIMPLYSIGN_TOTP_SECRET: ${{ secrets.SIMPLYSIGN_TOTP_SECRET }}
+          SIMPLYSIGN_TOTP_ALGORITHM: ${{ secrets.SIMPLYSIGN_TOTP_ALGORITHM }}
+          SIMPLYSIGN_TOTP_DIGITS: ${{ secrets.SIMPLYSIGN_TOTP_DIGITS }}
+          SIMPLYSIGN_TOTP_PERIOD: ${{ secrets.SIMPLYSIGN_TOTP_PERIOD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = 'C:\Program Files\Certum\SimplySign Desktop\SimplySignDesktop.exe'
+          if (-not (Test-Path -LiteralPath $exe)) {
+            winget install --id Certum.SmartSignSimplySignDesktop -e --silent `
+              --accept-package-agreements --accept-source-agreements --disable-interactivity
+            if ($LASTEXITCODE -ne 0) { throw "winget install failed: $LASTEXITCODE" }
+          }
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'SimplySignDesktop.exe is missing' }
+          Start-Process -FilePath $exe
+          Start-Sleep -Seconds 10
+          $connected = $false
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            node source/scripts/dev/connect-simplysign.mjs --user $env:SIMPLYSIGN_ACCOUNT
+            if ($LASTEXITCODE -eq 0) { $connected = $true; break }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $connected) { throw 'SimplySign login failed after 3 attempts' }
+          $deadline = (Get-Date).AddMinutes(2)
+          $cert = $null
+          while ((Get-Date) -lt $deadline) {
+            $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+              Where-Object { $_.HasPrivateKey -and $_.Thumbprint -eq '3CED6633E1492ADC8CE396489C29A50062B15128' } |
+              Select-Object -First 1
+            if ($cert) { break }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $cert) { throw 'SimplySign certificate with private key is unavailable' }
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}/Windows Kits/10/bin" -Filter signtool.exe -Recurse -File |
+            Where-Object { $_.Directory.Name -eq 'x64' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $signtool) { throw 'SignTool x64 is missing from Windows Kits' }
+
       - name: Complete digest signing and selected release operation
         if: inputs.delivery_mode == 'digest'
         uses: ./.github/actions/digest-release
         env:
+          GPLUS_LOCAL_SIMPLESIGN: ${{ inputs.hosted_signing }}
+          GPLUS_WINDOWS_CERT_THUMBPRINT: 3CED6633E1492ADC8CE396489C29A50062B15128
           QINIU_ACCESS_KEY: ${{ secrets.QINIU_ACCESS_KEY }}
           QINIU_SECRET_KEY: ${{ secrets.QINIU_SECRET_KEY }}
           RELEASE_TOKEN: ${{ inputs.publish && secrets.RELEASE_TOKEN || '' }}

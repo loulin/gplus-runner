@@ -94,6 +94,31 @@ async function signRound(files, label) {
     fs.copyFileSync(dig, transferred);
     return { fileId, relativePath: path.relative(state.unpacked, file).replaceAll('\\', '/'), digRelativePath, digSha256: hash(dig), p7uSha256: hash(p7u), originalSha256: hash(file) };
   });
+  if (process.env.GPLUS_LOCAL_SIMPLESIGN === 'true') {
+    const certSha1 = (process.env.GPLUS_WINDOWS_CERT_THUMBPRINT || thumbprint).toUpperCase();
+    const verified = [];
+    for (let i = 0; i < files.length; i++) {
+      const record = records[i];
+      const digestDir = path.join(roundRoot, 'private-digests', record.fileId);
+      const dig = path.join(digestDir, path.basename(files[i]) + '.dig');
+      const signed = `${dig}.signed`;
+      run(state.signTool, ['sign', '/ds', '/sha1', certSha1, '/fd', 'SHA256', dig]);
+      ensure(fs.existsSync(signed), 'signtool /ds did not produce a signed digest');
+      ensure(hash(files[i]) === record.originalSha256 && hash(path.join(digestDir, path.basename(files[i]) + '.p7u')) === record.p7uSha256, 'Build bytes changed before signature injection');
+      fs.copyFileSync(signed, path.join(digestDir, path.basename(files[i]) + '.dig.signed'));
+      run(state.signTool, ['sign', '/di', digestDir, files[i]]);
+      for (let attempt = 1; ; attempt++) {
+        try { run(state.signTool, ['timestamp', '/tr', timestampServer, '/td', 'SHA256', files[i]]); break; }
+        catch (error) { if (attempt === 3) throw error; await sleep(attempt * 5000); }
+      }
+      verified.push(verify(state, files[i]));
+    }
+    state.round = round;
+    state.rounds.push({ round, label, fileCount: files.length, mode: 'hosted-simplesign', signingCertificateSha1: certSha1, verified });
+    save(statePath, state);
+    console.log(`Round ${round} signed locally and verified: ${verified.length}/${files.length}`);
+    return;
+  }
   const exchangeId = crypto.randomUUID();
   const key = `signing-callbacks/${state.channel}/win-x64/${state.runId}-${state.attempt}/round-${round}-${exchangeId}.zip`;
   const request = {
@@ -169,7 +194,15 @@ async function main() {
   if (publishRequested) validatePublishInput(handoff, process.env);
   const state = { desktop, unpacked, signTool, publicCert, profile: process.env.PROFILE, channel: profile.channel, bucket: config.QINIU_BUCKET, domain: config.QINIU_DOMAIN, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT), version: handoff.version, buildNumber: handoff.buildNumber, round: 0, rounds: [] };
   save(statePath, state);
-  const executables = walk(unpacked).filter(file => file.toLowerCase().endsWith('.exe')).sort();
+  const skipUnsignedPayload = process.env.GPLUS_LOCAL_SIMPLESIGN === 'true';
+  const executables = walk(unpacked)
+    .filter(file => file.toLowerCase().endsWith('.exe'))
+    .filter(file => {
+      if (!skipUnsignedPayload) return true;
+      const normalized = file.replaceAll('\\', '/');
+      return !/\/resources\/(agent-payload|gplus-3b-runtime|gplus-python-wheelhouse)\//u.test(normalized);
+    })
+    .sort();
   await signRound(executables, 'app-executables');
   const signedHashes = new Map(executables.map(file => [file, hash(file)]));
   const packagePath = path.join(desktop, 'package.json');
