@@ -311,7 +311,7 @@ workspace 猜测或回退。两个文件的目录和文件 ACL 只允许当前�
 结构按应用分别为：
 
 ```text
-gplus-bot-desktop: payload/generated/ (generated Electron workspace, including win-unpacked)
+gplus-bot-desktop: workspace/generated/ (generated Electron workspace, including win-unpacked)
 libre-reader:     payload/workspace/ (apps/libre-reader plus repository-root scripts/lib)
 ```
 

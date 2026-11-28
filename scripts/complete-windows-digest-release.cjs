@@ -155,7 +155,7 @@ async function main() {
   ensure(process.env.QINIU_ACCESS_KEY && process.env.QINIU_SECRET_KEY, 'Qiniu callback credentials are required');
   fs.mkdirSync(root, { recursive: true });
   const source = path.join(process.env.GITHUB_WORKSPACE, 'source');
-  const desktop = path.join(source, '.windows-handoff/payload/generated/apps/desktop');
+  const desktop = path.join(source, '.windows-handoff/workspace/generated/apps/desktop');
   const unpacked = path.join(desktop, 'release/win-unpacked');
   ensure(fs.existsSync(unpacked), 'Prepared win-unpacked is missing');
   const config = Object.fromEntries(fs.readFileSync(path.join(source, `config/storage/qiniu/${profile.channel}.env`), 'utf8').split(/\r?\n/).filter(line => /^[A-Z_]+=/.test(line)).map(line => { const index = line.indexOf('='); return [line.slice(0, index), line.slice(index + 1).trim()]; }));
